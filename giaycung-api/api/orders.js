@@ -14,24 +14,51 @@ function toNumber(x, fallback = 0) {
   const n = Number(String(x ?? "").replace(/[^\d.-]/g, ""));
   return Number.isFinite(n) ? n : fallback;
 }
-
 function calcTotal(items) {
-  return items.reduce((sum, it) => sum + toNumber(it.quantity) * toNumber(it.price), 0);
+  return items.reduce(
+    (sum, it) => sum + toNumber(it.quantity) * toNumber(it.price),
+    0
+  );
+}
+
+function setCors(res) {
+  // Nếu bạn muốn giới hạn domain FE thì thay "*" bằng domain FE của bạn
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader(
+    "Access-Control-Allow-Methods",
+    "GET,POST,PATCH,DELETE,OPTIONS"
+  );
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    "Content-Type, Authorization"
+  );
+  res.setHeader("Access-Control-Max-Age", "86400");
 }
 
 async function getSheetsClient() {
-  // ✅ Bạn đang dùng sheet cho services/products => dùng y chang env đó
-  // Required env:
-  // GOOGLE_SHEETS_ID, GOOGLE_CLIENT_EMAIL, GOOGLE_PRIVATE_KEY
+  const spreadsheetId = process.env.GOOGLE_SHEETS_ID;
+  const client_email = process.env.GOOGLE_CLIENT_EMAIL;
+  const private_key = (process.env.GOOGLE_PRIVATE_KEY || "").replace(
+    /\\n/g,
+    "\n"
+  );
+
+  if (!spreadsheetId || !client_email || !private_key) {
+    const miss = [
+      !spreadsheetId ? "GOOGLE_SHEETS_ID" : null,
+      !client_email ? "GOOGLE_CLIENT_EMAIL" : null,
+      !private_key ? "GOOGLE_PRIVATE_KEY" : null,
+    ].filter(Boolean);
+
+    throw new Error(`Missing ENV: ${miss.join(", ")}`);
+  }
+
   const auth = new google.auth.GoogleAuth({
-    credentials: {
-      client_email: process.env.GOOGLE_CLIENT_EMAIL,
-      private_key: (process.env.GOOGLE_PRIVATE_KEY || "").replace(/\\n/g, "\n"),
-    },
+    credentials: { client_email, private_key },
     scopes: ["https://www.googleapis.com/auth/spreadsheets"],
   });
+
   const sheets = google.sheets({ version: "v4", auth });
-  const spreadsheetId = process.env.GOOGLE_SHEETS_ID;
   return { sheets, spreadsheetId };
 }
 
@@ -50,8 +77,14 @@ async function appendRow(sheets, spreadsheetId, range, row) {
   });
 }
 
-async function updateRowById(sheets, spreadsheetId, sheetName, id, idColIndex, patch) {
-  // đọc toàn sheet để tìm dòng id
+async function updateRowById(
+  sheets,
+  spreadsheetId,
+  sheetName,
+  id,
+  idColIndex,
+  patch
+) {
   const rows = await readSheet(sheets, spreadsheetId, `${sheetName}!A:Z`);
   if (rows.length <= 1) return { ok: false, message: "Sheet trống" };
 
@@ -61,10 +94,12 @@ async function updateRowById(sheets, spreadsheetId, sheetName, id, idColIndex, p
   const idx = body.findIndex((r) => safeTrim(r[idColIndex]) === id);
   if (idx === -1) return { ok: false, message: "Order not found" };
 
-  const rowIndexInSheet = idx + 2; // + header + 1-indexed
+  const rowIndexInSheet = idx + 2; // header + 1-indexed
   const current = body[idx];
 
-  const colIndexMap = Object.fromEntries(header.map((h, i) => [safeTrim(h), i]));
+  const colIndexMap = Object.fromEntries(
+    header.map((h, i) => [safeTrim(h), i])
+  );
 
   const updated = [...current];
   for (const [k, v] of Object.entries(patch)) {
@@ -73,8 +108,8 @@ async function updateRowById(sheets, spreadsheetId, sheetName, id, idColIndex, p
     updated[col] = v;
   }
 
-  // update full row A:Z (tới header length)
   const endCol = String.fromCharCode("A".charCodeAt(0) + header.length - 1);
+
   await sheets.spreadsheets.values.update({
     spreadsheetId,
     range: `${sheetName}!A${rowIndexInSheet}:${endCol}${rowIndexInSheet}`,
@@ -85,26 +120,32 @@ async function updateRowById(sheets, spreadsheetId, sheetName, id, idColIndex, p
   return { ok: true };
 }
 
-async function deleteRowsByOrderId(sheets, spreadsheetId, sheetName, orderId, orderIdColIndex) {
-  // NOTE: delete row in Google Sheets requires batchUpdate with sheetId.
-  // Để đơn giản & an toàn: mình sẽ "soft delete" bằng status=cancelled (hoặc thêm cột deleted=1).
-  // Nếu bạn muốn DELETE thật, mình sẽ viết batchUpdate theo sheetId ở bước sau.
-  return { ok: false, message: "DELETE hard row in Sheets not enabled (use status=cancelled)" };
-}
-
 // ================== HANDLER ==================
 export default async function handler(req, res) {
+  setCors(res);
+
+  // ✅ BẮT BUỘC: handle preflight để tránh 405
+  if (req.method === "OPTIONS") {
+    return res.status(200).end();
+  }
+
   try {
     const { sheets, spreadsheetId } = await getSheetsClient();
 
-    // SHEET NAMES
     const ORDERS_SHEET = "orders";
     const ITEMS_SHEET = "order_items";
 
     if (req.method === "GET") {
-      // admin list: return orders + items (grouped)
-      const ordersValues = await readSheet(sheets, spreadsheetId, `${ORDERS_SHEET}!A:Z`);
-      const itemsValues = await readSheet(sheets, spreadsheetId, `${ITEMS_SHEET}!A:Z`);
+      const ordersValues = await readSheet(
+        sheets,
+        spreadsheetId,
+        `${ORDERS_SHEET}!A:Z`
+      );
+      const itemsValues = await readSheet(
+        sheets,
+        spreadsheetId,
+        `${ITEMS_SHEET}!A:Z`
+      );
 
       const ordersHeader = ordersValues[0] || [];
       const ordersBody = ordersValues.slice(1);
@@ -112,7 +153,8 @@ export default async function handler(req, res) {
       const itemsHeader = itemsValues[0] || [];
       const itemsBody = itemsValues.slice(1);
 
-      const idx = (header, name) => header.findIndex((h) => safeTrim(h) === name);
+      const idx = (header, name) =>
+        header.findIndex((h) => safeTrim(h) === name);
 
       const o = {
         id: idx(ordersHeader, "id"),
@@ -137,12 +179,14 @@ export default async function handler(req, res) {
       for (const r of itemsBody) {
         const oid = safeTrim(r[it.orderId]);
         if (!oid) continue;
+
         const item = {
           productId: safeTrim(r[it.productId]),
           productName: safeTrim(r[it.productName]),
           quantity: toNumber(r[it.quantity]),
           price: toNumber(r[it.price]),
         };
+
         if (!itemsByOrder.has(oid)) itemsByOrder.set(oid, []);
         itemsByOrder.get(oid).push(item);
       }
@@ -169,7 +213,6 @@ export default async function handler(req, res) {
     }
 
     if (req.method === "POST") {
-      // user create order
       const body = req.body || {};
       const customerName = safeTrim(body.customerName);
       const customerPhone = safeTrim(body.customerPhone);
@@ -187,7 +230,9 @@ export default async function handler(req, res) {
         .filter((it) => it.productName && it.quantity > 0 && it.price >= 0);
 
       if (!customerName || !customerPhone || !customerAddress) {
-        return res.status(400).json({ message: "Thiếu thông tin khách hàng" });
+        return res
+          .status(400)
+          .json({ message: "Thiếu thông tin khách hàng" });
       }
       if (!items.length) {
         return res.status(400).json({ message: "Giỏ hàng trống" });
@@ -197,8 +242,6 @@ export default async function handler(req, res) {
       const createdAt = nowIso();
       const totalAmount = calcTotal(items);
 
-      // append order row
-      // orders: id, customerName, customerPhone, customerAddress, notes, totalAmount, status, createdAt
       await appendRow(sheets, spreadsheetId, `${ORDERS_SHEET}!A:H`, [
         id,
         customerName,
@@ -210,7 +253,6 @@ export default async function handler(req, res) {
         createdAt,
       ]);
 
-      // append items rows
       for (const it of items) {
         await appendRow(sheets, spreadsheetId, `${ITEMS_SHEET}!A:E`, [
           id,
@@ -222,6 +264,7 @@ export default async function handler(req, res) {
       }
 
       return res.status(201).json({
+        ok: true,
         data: {
           id,
           customerName,
@@ -237,50 +280,59 @@ export default async function handler(req, res) {
     }
 
     if (req.method === "PATCH") {
-      // PATCH /api/orders?id=ORD-XXX  body: { status }
       const id = safeTrim(req.query.id);
       const status = safeTrim(req.body?.status);
 
       const allowed = ["pending", "processing", "completed", "cancelled"];
       if (!id) return res.status(400).json({ message: "Missing id" });
-      if (!allowed.includes(status)) return res.status(400).json({ message: "Status không hợp lệ" });
+      if (!allowed.includes(status))
+        return res.status(400).json({ message: "Status không hợp lệ" });
 
       const ok = await updateRowById(
         sheets,
         spreadsheetId,
         ORDERS_SHEET,
         id,
-        0, // id is col A
+        0,
         { status }
       );
 
-      if (!ok.ok) return res.status(404).json({ message: ok.message || "Order not found" });
+      if (!ok.ok)
+        return res
+          .status(404)
+          .json({ message: ok.message || "Order not found" });
 
-      return res.status(200).json({ data: { id, status } });
+      return res.status(200).json({ ok: true, data: { id, status } });
     }
 
     if (req.method === "DELETE") {
-      // Với GoogleSheet, mình đề xuất "soft delete" => set status=cancelled
       const id = safeTrim(req.query.id);
       if (!id) return res.status(400).json({ message: "Missing id" });
 
       const ok = await updateRowById(
         sheets,
         spreadsheetId,
-        "orders",
+        ORDERS_SHEET,
         id,
         0,
         { status: "cancelled" }
       );
 
-      if (!ok.ok) return res.status(404).json({ message: ok.message || "Order not found" });
+      if (!ok.ok)
+        return res
+          .status(404)
+          .json({ message: ok.message || "Order not found" });
 
       return res.status(200).json({ ok: true });
     }
 
     return res.status(405).json({ message: "Method not allowed" });
   } catch (err) {
-    console.error(err);
-    return res.status(500).json({ message: "Server error" });
+    console.error("Orders API error:", err);
+    return res.status(500).json({
+      message: "Server error",
+      // ✅ giúp bạn debug nhanh trên browser
+      detail: String(err?.message || err),
+    });
   }
 }
