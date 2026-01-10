@@ -36,7 +36,7 @@ function setCors(res) {
 }
 
 async function getSheetsClient() {
-  const spreadsheetId = process.env.GOOGLE_SHEETS_ID;
+  const spreadsheetId = process.env.SPREADSHEET_ID;
   const client_email = process.env.GOOGLE_CLIENT_EMAIL;
   const private_key = (process.env.GOOGLE_PRIVATE_KEY || "").replace(
     /\\n/g,
