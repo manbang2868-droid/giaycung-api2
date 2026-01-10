@@ -122,10 +122,9 @@ async function updateRowById(
 
 // ================== HANDLER ==================
 export default async function handler(req, res) {
-  setCors(res);
+  setCors(res);                 // ✅ DÒNG 1: NGAY ĐẦU handler
 
-  // ✅ BẮT BUỘC: handle preflight để tránh 405
-  if (req.method === "OPTIONS") {
+  if (req.method === "OPTIONS") // ✅ DÒNG 2: xử lý preflight
     return res.status(200).end();
   }
 
