@@ -8,33 +8,94 @@ import {
 } from "./_lib/gsheets.js";
 
 const SHEET_NAME = "contact";
+const RANGE_ALL = `${SHEET_NAME}!A:Z`;
+
+// Nếu sheet chưa có header, sẽ auto set header này (A1:G1)
+const DEFAULT_HEADERS = [
+  "id",
+  "name",
+  "address",
+  "phone",
+  "email",
+  "hours",
+  "googleMapsUrl",
+];
 
 function safeTrim(x) {
   return String(x ?? "").trim();
+}
+
+function parseBody(req) {
+  if (!req?.body) return {};
+  if (typeof req.body === "string") {
+    try {
+      return JSON.parse(req.body);
+    } catch {
+      return {};
+    }
+  }
+  return req.body || {};
 }
 
 function normalizeHeader(h) {
   return safeTrim(h);
 }
 
-function rowsToObjects(values) {
+function rowsToObjects(values, headers) {
   if (!values || values.length < 2) return [];
-  const headers = values[0].map(normalizeHeader);
 
   return values.slice(1).map((row, idx) => {
     const obj = {};
     headers.forEach((h, i) => {
       obj[h] = row?.[i] ?? "";
     });
-    // giữ lại rowIndex để PATCH/DELETE tìm nhanh (row number trên sheet)
-    obj.__rowIndex = idx + 2; // vì header là dòng 1, data bắt đầu dòng 2
+    // header là dòng 1, data bắt đầu dòng 2
+    obj.__rowIndex = idx + 2;
     return obj;
   });
 }
 
 function buildRowFromPayload(payload, headers) {
   // Map theo đúng thứ tự cột trong sheet
-  return headers.map((h) => payload[h] ?? "");
+  const p = payload || {};
+  return headers.map((h) => p[h] ?? "");
+}
+
+function normalizeContact(x) {
+  return {
+    id: safeTrim(x.id),
+    name: safeTrim(x.name),
+    address: safeTrim(x.address),
+    phone: safeTrim(x.phone),
+    email: safeTrim(x.email),
+    hours: safeTrim(x.hours),
+    googleMapsUrl: safeTrim(x.googleMapsUrl),
+  };
+}
+
+async function getValues(sheets, spreadsheetId) {
+  const resp = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: RANGE_ALL,
+  });
+  return resp.data.values || [];
+}
+
+async function ensureHeaderRow(sheets, spreadsheetId, values) {
+  const firstRow = values[0] || [];
+  const headers = firstRow.map(normalizeHeader).filter(Boolean);
+
+  if (headers.length > 0) return headers;
+
+  // Sheet chưa có header -> set header mặc định
+  await sheets.spreadsheets.values.update({
+    spreadsheetId,
+    range: `${SHEET_NAME}!A1:G1`,
+    valueInputOption: "USER_ENTERED",
+    requestBody: { values: [DEFAULT_HEADERS] },
+  });
+
+  return DEFAULT_HEADERS;
 }
 
 export default async function handler(req, res) {
@@ -42,59 +103,39 @@ export default async function handler(req, res) {
 
   try {
     const spreadsheetId = safeTrim(process.env.SPREADSHEET_ID);
-    if (!spreadsheetId) throw new Error("Missing SPREADSHEET_ID");
+    if (!spreadsheetId) {
+      return json(res, 500, { ok: false, message: "Missing SPREADSHEET_ID" });
+    }
 
     const sheets = await getSheetsClient();
 
-    // đọc toàn bộ sheet để lấy headers + dữ liệu
-    const resp = await sheets.spreadsheets.values.get({
-      spreadsheetId,
-      range: `${SHEET_NAME}!A:Z`,
-    });
+    // luôn đọc sheet để lấy headers + dữ liệu
+    let values = await getValues(sheets, spreadsheetId);
+    const headers = await ensureHeaderRow(sheets, spreadsheetId, values);
 
-    const values = resp.data.values || [];
-    const headers = (values[0] || []).map(normalizeHeader);
+    // đọc lại sau khi ensure header (phòng trường hợp sheet trống)
+    values = await getValues(sheets, spreadsheetId);
 
-    // Debug nhanh: /api/contact?debug=1
-    if (safeTrim(req.query?.debug) === "1") {
-      return json(res, 200, {
-        ok: true,
-        debug: {
-          sheetName: SHEET_NAME,
-          headers,
-          rowsCountRaw: values.length,
-          sampleFirst3: values.slice(0, 3),
-        },
-      });
-    }
-
-    // ✅ GET: list stores
+    // ===== GET =====
     if (req.method === "GET") {
-      const items = rowsToObjects(values)
-        .map((x) => ({
-          id: safeTrim(x.id),
-          name: safeTrim(x.name),
-          address: safeTrim(x.address),
-          phone: safeTrim(x.phone),
-          email: safeTrim(x.email),
-          hours: safeTrim(x.hours),
-          googleMapsUrl: safeTrim(x.googleMapsUrl),
-        }))
-        .filter((x) =>
-          Object.values(x).some((v) => safeTrim(v) !== "")
-        );
+      const items = rowsToObjects(values, headers)
+        .map((x) => normalizeContact(x))
+        .filter((x) => Object.values(x).some((v) => safeTrim(v) !== ""));
 
       return json(res, 200, { ok: true, data: items });
     }
 
-    // Từ đây trở xuống là thao tác ghi → cần admin
+    // từ đây trở xuống là ghi => cần admin
     if (!requireAdmin(req)) {
-      return json(res, 401, { ok: false, message: "Unauthorized" });
+      return json(res, 401, {
+        ok: false,
+        message: "Unauthorized (missing/invalid X-Admin-Token)",
+      });
     }
 
-    // ✅ POST: add store
+    // ===== POST (create) =====
     if (req.method === "POST") {
-      const body = typeof req.body === "string" ? JSON.parse(req.body) : req.body;
+      const body = parseBody(req);
 
       const name = safeTrim(body?.name);
       const address = safeTrim(body?.address);
@@ -112,15 +153,6 @@ export default async function handler(req, res) {
 
       const id = safeTrim(body?.id) || `store_${Date.now()}`;
 
-      // Nếu sheet chưa có header (sheet mới)
-      if (!headers.length) {
-        return json(res, 500, {
-          ok: false,
-          message:
-            "Sheet contact chưa có header. Hãy tạo hàng tiêu đề trước (id,name,address,phone,email,hours,googleMapsUrl).",
-        });
-      }
-
       const payload = {
         id,
         name,
@@ -135,7 +167,7 @@ export default async function handler(req, res) {
 
       await sheets.spreadsheets.values.append({
         spreadsheetId,
-        range: `${SHEET_NAME}!A:Z`,
+        range: RANGE_ALL,
         valueInputOption: "USER_ENTERED",
         insertDataOption: "INSERT_ROWS",
         requestBody: { values: [row] },
@@ -144,21 +176,20 @@ export default async function handler(req, res) {
       return json(res, 200, { ok: true, data: { id } });
     }
 
-    // ✅ PATCH: update store by id  (/api/contact?id=store_123)
-    if (req.method === "PATCH") {
-      const id = safeTrim(req.query?.id);
-      if (!id) {
-        return json(res, 400, { ok: false, message: "Missing query: id" });
-      }
+    // ===== PUT / PATCH (update) =====
+    // ✅ FIX: frontend bạn đang gọi PUT => backend phải hỗ trợ PUT
+    if (req.method === "PUT" || req.method === "PATCH") {
+      const body = parseBody(req);
 
-      const body = typeof req.body === "string" ? JSON.parse(req.body) : req.body;
+      // nhận id từ body hoặc query
+      const id = safeTrim(body?.id) || safeTrim(req.query?.id);
+      if (!id) return json(res, 400, { ok: false, message: "Thiếu id để cập nhật" });
 
-      // đọc lại objects để tìm rowIndex
-      const items = rowsToObjects(values);
+      const items = rowsToObjects(values, headers);
       const found = items.find((x) => safeTrim(x.id) === id);
 
       if (!found) {
-        return json(res, 404, { ok: false, message: "Not found" });
+        return json(res, 404, { ok: false, message: `Không tìm thấy cửa hàng id=${id}` });
       }
 
       // merge: giữ data cũ, update field mới
@@ -167,26 +198,26 @@ export default async function handler(req, res) {
         merged[h] = found[h] ?? "";
       });
 
-      // chỉ cập nhật các field bạn cho phép
-      const updatable = [
-        "name",
-        "address",
-        "phone",
-        "email",
-        "hours",
-        "googleMapsUrl",
-      ];
-      updatable.forEach((k) => {
-        if (k in (body || {})) merged[k] = safeTrim(body[k]);
-      });
+      const updatable = ["name", "address", "phone", "email", "hours", "googleMapsUrl"];
 
-      // đảm bảo id không đổi
-      merged.id = id;
+      if (req.method === "PUT") {
+        // PUT: cập nhật "đầy đủ" theo payload, nhưng vẫn không tự xóa field nếu bạn không gửi
+        // (để tránh lỡ tay làm rỗng dữ liệu)
+        updatable.forEach((k) => {
+          if (k in (body || {})) merged[k] = safeTrim(body[k]);
+        });
+      } else {
+        // PATCH: chỉ update field nào có gửi lên
+        updatable.forEach((k) => {
+          if (k in (body || {})) merged[k] = safeTrim(body[k]);
+        });
+      }
 
-      const rowIndex = found.__rowIndex; // số dòng trong sheet
+      merged.id = id; // khóa id
+
+      const rowIndex = found.__rowIndex;
       const row = buildRowFromPayload(merged, headers);
 
-      // update cả row
       await sheets.spreadsheets.values.update({
         spreadsheetId,
         range: `${SHEET_NAME}!A${rowIndex}:Z${rowIndex}`,
@@ -197,26 +228,24 @@ export default async function handler(req, res) {
       return json(res, 200, { ok: true, data: { id } });
     }
 
-    // ✅ DELETE: delete row by id (shift lên)  (/api/contact?id=store_123)
+    // ===== DELETE (delete row by id, shift up) =====
     if (req.method === "DELETE") {
-      const id = safeTrim(req.query?.id);
-      if (!id) {
-        return json(res, 400, { ok: false, message: "Missing query: id" });
-      }
+      const body = parseBody(req);
+      const id = safeTrim(req.query?.id) || safeTrim(body?.id);
+      if (!id) return json(res, 400, { ok: false, message: "Thiếu id để xóa" });
 
-      // tìm rowIndex
-      const items = rowsToObjects(values);
+      const items = rowsToObjects(values, headers);
       const found = items.find((x) => safeTrim(x.id) === id);
 
       if (!found) {
-        return json(res, 404, { ok: false, message: "Not found" });
+        return json(res, 404, { ok: false, message: `Không tìm thấy cửa hàng id=${id}` });
       }
 
       const sheetId = await getSheetIdByTitle(sheets, spreadsheetId, SHEET_NAME);
 
-      const rowIndex = found.__rowIndex; // dòng thực trên sheet
-      const startIndex = rowIndex - 1; // 0-based
-      const endIndex = rowIndex; // delete đúng 1 dòng
+      const rowIndex = found.__rowIndex; // 1-based
+      const startIndex = rowIndex - 1;  // 0-based
+      const endIndex = rowIndex;        // exclusive
 
       await sheets.spreadsheets.batchUpdate({
         spreadsheetId,
