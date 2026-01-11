@@ -56,9 +56,15 @@ export function json(res, status, data) {
 
 export function allowCors(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
+  res.setHeader(
+    "Access-Control-Allow-Methods",
+    "GET,POST,PUT,PATCH,DELETE,OPTIONS"
+  );
   // cho phép cả Authorization + X-Admin-Token để tương thích
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Admin-Token");
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    "Content-Type, Authorization, X-Admin-Token"
+  );
 
   if (req.method === "OPTIONS") {
     res.statusCode = 200;
@@ -99,7 +105,8 @@ export function verifyAdminTokenString(token) {
     .update(`${h}.${p}`)
     .digest("base64url");
 
-  if (!timingSafeEqualStr(sig, expected)) return { ok: false, message: "Invalid signature" };
+  if (!timingSafeEqualStr(sig, expected))
+    return { ok: false, message: "Invalid signature" };
 
   let payload;
   try {
