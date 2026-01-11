@@ -7,7 +7,7 @@ function getPrivateKey() {
 }
 
 export function getSpreadsheetId() {
-  // hỗ trợ cả 2 tên env để khỏi lỗi
+  // bạn đang dùng GOOGLE_SHEETS_ID trên Vercel
   return process.env.GOOGLE_SHEETS_ID || process.env.SPREADSHEET_ID || "";
 }
 
@@ -41,8 +41,12 @@ export function json(res, status, data) {
 
 export function allowCors(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PATCH,PUT,DELETE,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Admin-Token");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PATCH,DELETE,OPTIONS");
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    "Content-Type, X-Admin-Token, Authorization"
+  );
+
   if (req.method === "OPTIONS") {
     res.statusCode = 200;
     res.end();
@@ -51,19 +55,12 @@ export function allowCors(req, res) {
   return false;
 }
 
-function readBearer(req) {
-  const a = req.headers?.authorization || "";
-  const m = typeof a === "string" ? a.match(/^Bearer\s+(.+)$/i) : null;
-  return m?.[1] || "";
-}
-
-// Bảo vệ PUT/PATCH/DELETE/POST bằng token
 export function requireAdmin(req) {
-  const need = process.env.ADMIN_TOKEN_SECRET || process.env.ADMIN_TOKEN || "";
-  if (!need) return true; // chưa set thì bỏ qua
+  const secret = process.env.ADMIN_TOKEN_SECRET; // bạn hỏi cái này
+  if (!secret) return true; // nếu chưa set thì bỏ qua
+  const got =
+    req.headers["x-admin-token"] ||
+    (req.headers.authorization || "").replace(/^Bearer\s+/i, "");
 
-  const gotHeader = req.headers["x-admin-token"];
-  const got = (Array.isArray(gotHeader) ? gotHeader[0] : gotHeader) || readBearer(req);
-
-  return got === need;
+  return got === secret;
 }
