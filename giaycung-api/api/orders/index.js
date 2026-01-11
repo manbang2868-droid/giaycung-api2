@@ -15,33 +15,31 @@ function toNumber(x, fallback = 0) {
   return Number.isFinite(n) ? n : fallback;
 }
 function calcTotal(items) {
-  return items.reduce(
-    (sum, it) => sum + toNumber(it.quantity) * toNumber(it.price),
-    0
-  );
+  return items.reduce((sum, it) => sum + toNumber(it.quantity) * toNumber(it.price), 0);
 }
 
-function setCors(res) {
+// ===== CORS =====
+function setCors(req, res) {
+  // Nếu muốn khóa domain FE, thay "*" bằng domain FE
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader(
-    "Access-Control-Allow-Methods",
-    "GET,POST,PATCH,DELETE,OPTIONS"
-  );
+  res.setHeader("Vary", "Origin");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PATCH,DELETE,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
   res.setHeader("Access-Control-Max-Age", "86400");
 }
 
+// ===== Sheets client =====
 async function getSheetsClient() {
-  const spreadsheetId = process.env.SPREADSHEET_ID;
+  // ✅ hỗ trợ cả 2 tên ENV để khỏi nhầm:
+  // - GOOGLE_SHEETS_ID (cũ)
+  // - SPREADSHEET_ID (bạn đang dùng)
+  const spreadsheetId = process.env.GOOGLE_SHEETS_ID || process.env.SPREADSHEET_ID;
   const client_email = process.env.GOOGLE_CLIENT_EMAIL;
-  const private_key = (process.env.GOOGLE_PRIVATE_KEY || "").replace(
-    /\\n/g,
-    "\n"
-  );
+  const private_key = (process.env.GOOGLE_PRIVATE_KEY || "").replace(/\\n/g, "\n");
 
   if (!spreadsheetId || !client_email || !private_key) {
     const miss = [
-      !spreadsheetId ? "SPREADSHEET_ID" : null,
+      !spreadsheetId ? "GOOGLE_SHEETS_ID or SPREADSHEET_ID" : null,
       !client_email ? "GOOGLE_CLIENT_EMAIL" : null,
       !private_key ? "GOOGLE_PRIVATE_KEY" : null,
     ].filter(Boolean);
@@ -72,30 +70,23 @@ async function appendRow(sheets, spreadsheetId, range, row) {
   });
 }
 
+// ================== HANDLER ==================
 export default async function handler(req, res) {
-  setCors(res);
+  setCors(req, res);
 
-  // ✅ FIX: OPTIONS phải có block
-  if (req.method === "OPTIONS") {
-    return res.status(200).end();
-  }
+  // ✅ Preflight
+  if (req.method === "OPTIONS") return res.status(200).end();
 
   try {
     const { sheets, spreadsheetId } = await getSheetsClient();
+
     const ORDERS_SHEET = "orders";
     const ITEMS_SHEET = "order_items";
 
+    // ✅ GET /api/orders
     if (req.method === "GET") {
-      const ordersValues = await readSheet(
-        sheets,
-        spreadsheetId,
-        `${ORDERS_SHEET}!A:Z`
-      );
-      const itemsValues = await readSheet(
-        sheets,
-        spreadsheetId,
-        `${ITEMS_SHEET}!A:Z`
-      );
+      const ordersValues = await readSheet(sheets, spreadsheetId, `${ORDERS_SHEET}!A:Z`);
+      const itemsValues = await readSheet(sheets, spreadsheetId, `${ITEMS_SHEET}!A:Z`);
 
       const ordersHeader = ordersValues[0] || [];
       const ordersBody = ordersValues.slice(1);
@@ -103,8 +94,7 @@ export default async function handler(req, res) {
       const itemsHeader = itemsValues[0] || [];
       const itemsBody = itemsValues.slice(1);
 
-      const idx = (header, name) =>
-        header.findIndex((h) => safeTrim(h) === name);
+      const idx = (header, name) => header.findIndex((h) => safeTrim(h) === name);
 
       const o = {
         id: idx(ordersHeader, "id"),
@@ -159,11 +149,13 @@ export default async function handler(req, res) {
         .filter((x) => x.id)
         .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
 
-      return res.status(200).json({ ok: true, data });
+      return res.status(200).json({ data });
     }
 
+    // ✅ POST /api/orders
     if (req.method === "POST") {
       const body = req.body || {};
+
       const customerName = safeTrim(body.customerName);
       const customerPhone = safeTrim(body.customerPhone);
       const customerAddress = safeTrim(body.customerAddress);
@@ -180,18 +172,17 @@ export default async function handler(req, res) {
         .filter((it) => it.productName && it.quantity > 0 && it.price >= 0);
 
       if (!customerName || !customerPhone || !customerAddress) {
-        return res
-          .status(400)
-          .json({ ok: false, message: "Thiếu thông tin khách hàng" });
+        return res.status(400).json({ message: "Thiếu thông tin khách hàng" });
       }
       if (!items.length) {
-        return res.status(400).json({ ok: false, message: "Giỏ hàng trống" });
+        return res.status(400).json({ message: "Giỏ hàng trống" });
       }
 
       const id = makeOrderId();
       const createdAt = nowIso();
       const totalAmount = calcTotal(items);
 
+      // orders columns: id, customerName, customerPhone, customerAddress, notes, totalAmount, status, createdAt
       await appendRow(sheets, spreadsheetId, `${ORDERS_SHEET}!A:H`, [
         id,
         customerName,
@@ -203,18 +194,18 @@ export default async function handler(req, res) {
         createdAt,
       ]);
 
-      for (const it2 of items) {
+      // order_items columns: orderId, productId, productName, quantity, price
+      for (const it of items) {
         await appendRow(sheets, spreadsheetId, `${ITEMS_SHEET}!A:E`, [
           id,
-          it2.productId,
-          it2.productName,
-          String(it2.quantity),
-          String(it2.price),
+          it.productId,
+          it.productName,
+          String(it.quantity),
+          String(it.price),
         ]);
       }
 
       return res.status(201).json({
-        ok: true,
         data: {
           id,
           customerName,
@@ -229,11 +220,10 @@ export default async function handler(req, res) {
       });
     }
 
-    return res.status(405).json({ ok: false, message: "Method not allowed" });
+    return res.status(405).json({ message: "Method not allowed" });
   } catch (err) {
-    console.error("Orders API error:", err);
+    console.error("Orders index error:", err);
     return res.status(500).json({
-      ok: false,
       message: "Server error",
       detail: String(err?.message || err),
     });
