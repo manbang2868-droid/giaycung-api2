@@ -1,0 +1,12 @@
+
+{
+  "name": "giaycung-api",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "googleapis": "^170.0.0"
+  }
+}
