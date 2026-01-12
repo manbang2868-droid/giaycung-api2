@@ -7,6 +7,6 @@
     "node": ">=18"
   },
   "dependencies": {
-    "googleapis": "^170.0.0"
+    "googleapis": "170.0.0"
   }
 }
