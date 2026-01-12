@@ -1,5 +1,5 @@
 // api/orders/[id].js
-import { allowCors, json, requireAdmin, getSpreadsheetId, getSheetsClient } from "../_lib/gsheets.js";
+import { allowCors, json, getSpreadsheetId, getSheetsClient, requireAdmin } from "../_lib/gsheets.js";
 
 function safeTrim(x) {
   return String(x ?? "").trim();
@@ -47,7 +47,7 @@ async function updateRowById(sheets, spreadsheetId, sheetName, id, idColIndex, p
 export default async function handler(req, res) {
   if (allowCors(req, res)) return;
 
-  // ✅ admin-only cho PATCH/DELETE
+  // ✅ admin-only PATCH/DELETE
   if (req.method === "PATCH" || req.method === "DELETE") {
     if (!requireAdmin(req)) {
       return json(res, 401, { ok: false, message: "Unauthorized (missing/invalid X-Admin-Token)" });
@@ -55,13 +55,12 @@ export default async function handler(req, res) {
   }
 
   try {
-    const sheets = await getSheetsClient(); // ✅ sheets instance
     const spreadsheetId = getSpreadsheetId();
+    const sheets = await getSheetsClient();
 
     const ORDERS_SHEET = "orders";
 
-    const idRaw = req.query?.id;
-    const id = safeTrim(Array.isArray(idRaw) ? idRaw[0] : idRaw);
+    const id = safeTrim(req.query.id);
     if (!id) return json(res, 400, { ok: false, message: "Missing id" });
 
     // ✅ PATCH /api/orders/:id
@@ -72,31 +71,15 @@ export default async function handler(req, res) {
         return json(res, 400, { ok: false, message: "Status không hợp lệ" });
       }
 
-      const ok = await updateRowById(
-        sheets,
-        spreadsheetId,
-        ORDERS_SHEET,
-        id,
-        0, // id nằm cột A
-        { status }
-      );
-
+      const ok = await updateRowById(sheets, spreadsheetId, ORDERS_SHEET, id, 0, { status });
       if (!ok.ok) return json(res, 404, { ok: false, message: ok.message || "Order not found" });
 
       return json(res, 200, { ok: true, data: { id, status } });
     }
 
-    // ✅ DELETE /api/orders/:id (soft delete => cancelled)
+    // ✅ DELETE /api/orders/:id (soft delete = cancelled)
     if (req.method === "DELETE") {
-      const ok = await updateRowById(
-        sheets,
-        spreadsheetId,
-        ORDERS_SHEET,
-        id,
-        0,
-        { status: "cancelled" }
-      );
-
+      const ok = await updateRowById(sheets, spreadsheetId, ORDERS_SHEET, id, 0, { status: "cancelled" });
       if (!ok.ok) return json(res, 404, { ok: false, message: ok.message || "Order not found" });
 
       return json(res, 200, { ok: true });
