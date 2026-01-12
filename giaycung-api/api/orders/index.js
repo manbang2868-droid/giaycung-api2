@@ -1,5 +1,4 @@
 // api/orders/index.js
-import { google } from "googleapis";
 import { allowCors, json, getSheetsClient } from "../_lib/gsheets.js";
 
 function safeTrim(x) {
@@ -17,10 +16,7 @@ function toNumber(x, fallback = 0) {
   return Number.isFinite(n) ? n : fallback;
 }
 function calcTotal(items) {
-  return items.reduce(
-    (sum, it) => sum + toNumber(it.quantity) * toNumber(it.price),
-    0
-  );
+  return items.reduce((sum, it) => sum + toNumber(it.quantity) * toNumber(it.price), 0);
 }
 
 async function readSheet(sheets, spreadsheetId, range) {
@@ -39,7 +35,7 @@ async function appendRow(sheets, spreadsheetId, range, row) {
 }
 
 export default async function handler(req, res) {
-  if (allowCors(req, res)) return; // handles OPTIONS + sets CORS
+  if (allowCors(req, res)) return;
 
   try {
     const { sheets, spreadsheetId } = await getSheetsClient();
@@ -47,18 +43,10 @@ export default async function handler(req, res) {
     const ORDERS_SHEET = "orders";
     const ITEMS_SHEET = "order_items";
 
-    // ✅ GET /api/orders  (PUBLIC - admin page dùng để xem)
+    // ✅ GET /api/orders (admin)
     if (req.method === "GET") {
-      const ordersValues = await readSheet(
-        sheets,
-        spreadsheetId,
-        `${ORDERS_SHEET}!A:Z`
-      );
-      const itemsValues = await readSheet(
-        sheets,
-        spreadsheetId,
-        `${ITEMS_SHEET}!A:Z`
-      );
+      const ordersValues = await readSheet(sheets, spreadsheetId, `${ORDERS_SHEET}!A:Z`);
+      const itemsValues = await readSheet(sheets, spreadsheetId, `${ITEMS_SHEET}!A:Z`);
 
       const ordersHeader = ordersValues[0] || [];
       const ordersBody = ordersValues.slice(1);
@@ -66,8 +54,7 @@ export default async function handler(req, res) {
       const itemsHeader = itemsValues[0] || [];
       const itemsBody = itemsValues.slice(1);
 
-      const idx = (header, name) =>
-        header.findIndex((h) => safeTrim(h) === name);
+      const idx = (header, name) => header.findIndex((h) => safeTrim(h) === name);
 
       const o = {
         id: idx(ordersHeader, "id"),
@@ -125,7 +112,7 @@ export default async function handler(req, res) {
       return json(res, 200, { ok: true, data });
     }
 
-    // ✅ POST /api/orders (PUBLIC - khách đặt hàng)
+    // ✅ POST /api/orders (public)
     if (req.method === "POST") {
       const body = req.body || {};
 
@@ -155,7 +142,6 @@ export default async function handler(req, res) {
       const createdAt = nowIso();
       const totalAmount = calcTotal(items);
 
-      // orders columns: id, customerName, customerPhone, customerAddress, notes, totalAmount, status, createdAt
       await appendRow(sheets, spreadsheetId, `${ORDERS_SHEET}!A:H`, [
         id,
         customerName,
@@ -167,14 +153,13 @@ export default async function handler(req, res) {
         createdAt,
       ]);
 
-      // order_items columns: orderId, productId, productName, quantity, price
-      for (const itx of items) {
+      for (const it of items) {
         await appendRow(sheets, spreadsheetId, `${ITEMS_SHEET}!A:E`, [
           id,
-          itx.productId,
-          itx.productName,
-          String(itx.quantity),
-          String(itx.price),
+          it.productId,
+          it.productName,
+          String(it.quantity),
+          String(it.price),
         ]);
       }
 
