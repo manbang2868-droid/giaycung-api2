@@ -3,18 +3,11 @@
 // ✅ Không dùng express (tránh lỗi missing package)
 // ✅ Forward request đến đúng file trong /api/*
 
-import serviceOrdersHandler from "./service-orders.js";
-
 export default async function handler(req, res) {
   try {
+    // Đường dẫn gốc: /api/...
     const url = req.url || "";
     const path = url.split("?")[0] || "";
-
-    // ✅ Forward service-orders (dynamic catch-all file)
-    if (path.startsWith("/api/service-orders")) {
-      const mod = await import("./service-orders/[...slug].js");
-      return mod.default(req, res);
-    }
 
     // Nếu request chính là /api hoặc /api/ -> trả ping
     if (path === "/api" || path === "/api/") {
@@ -50,7 +43,7 @@ export default async function handler(req, res) {
     res.setHeader("Content-Type", "application/json");
     res.statusCode = 404;
     return res.end(JSON.stringify({ ok: false, message: "Not found" }));
-   } catch (err) {
+  } catch (err) {
     console.error("api/index dispatcher error:", err);
     res.setHeader("Content-Type", "application/json");
     res.statusCode = 500;
