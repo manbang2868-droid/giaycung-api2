@@ -1,4 +1,5 @@
 // api/orders/index.js
+import { google } from "googleapis";
 import { allowCors, json, getSpreadsheetId, getSheetsClient } from "../_lib/gsheets.js";
 
 function safeTrim(x) {
@@ -38,8 +39,8 @@ export default async function handler(req, res) {
   if (allowCors(req, res)) return;
 
   try {
-    const sheets = await getSheetsClient(); // ✅ gsheets.js trả về sheets instance
     const spreadsheetId = getSpreadsheetId();
+    const sheets = await getSheetsClient(); // ✅ trả về sheets client (có .spreadsheets)
 
     const ORDERS_SHEET = "orders";
     const ITEMS_SHEET = "order_items";
@@ -143,7 +144,6 @@ export default async function handler(req, res) {
       const createdAt = nowIso();
       const totalAmount = calcTotal(items);
 
-      // orders columns: id, customerName, customerPhone, customerAddress, notes, totalAmount, status, createdAt
       await appendRow(sheets, spreadsheetId, `${ORDERS_SHEET}!A:H`, [
         id,
         customerName,
@@ -155,14 +155,13 @@ export default async function handler(req, res) {
         createdAt,
       ]);
 
-      // order_items columns: orderId, productId, productName, quantity, price
-      for (const itx of items) {
+      for (const it of items) {
         await appendRow(sheets, spreadsheetId, `${ITEMS_SHEET}!A:E`, [
           id,
-          itx.productId,
-          itx.productName,
-          String(itx.quantity),
-          String(itx.price),
+          it.productId,
+          it.productName,
+          String(it.quantity),
+          String(it.price),
         ]);
       }
 
