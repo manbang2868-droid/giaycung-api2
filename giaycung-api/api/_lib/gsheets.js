@@ -1,5 +1,6 @@
 // api/_lib/gsheets.js
-import { google } from "googleapis";
+import googleapisPkg from "googleapis";
+const { google } = googleapisPkg;
 
 function getPrivateKey() {
   const k = process.env.GOOGLE_PRIVATE_KEY || "";
@@ -33,13 +34,27 @@ export async function getSheetsClient() {
 }
 
 export function allowCors(req, res) {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Admin-Token");
+  // ✅ chỉ allow đúng domain frontend của bạn
+  const origin = req.headers.origin;
+  const allowed = "https://giay-cung4.vercel.app";
+
+  if (origin === allowed) {
+    res.setHeader("Access-Control-Allow-Origin", allowed);
+  }
+
+  res.setHeader("Vary", "Origin");
+  res.setHeader(
+    "Access-Control-Allow-Methods",
+    "GET,POST,PUT,PATCH,DELETE,OPTIONS"
+  );
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    "Content-Type, Authorization, X-Admin-Token"
+  );
   res.setHeader("Access-Control-Max-Age", "86400");
 
   if (req.method === "OPTIONS") {
-    res.statusCode = 200;
+    res.statusCode = 204;
     res.end();
     return true;
   }
@@ -50,13 +65,19 @@ export function json(res, status, data) {
   res.statusCode = status;
   res.setHeader("Content-Type", "application/json");
 
-  // ✅ luôn kèm CORS kể cả khi error
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Admin-Token");
+  // ✅ luôn kèm CORS (kể cả error)
+  const origin = res.req?.headers?.origin;
+  const allowed = "https://giay-cung4.vercel.app";
+  if (origin === allowed) res.setHeader("Access-Control-Allow-Origin", allowed);
+  res.setHeader("Vary", "Origin");
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    "Content-Type, Authorization, X-Admin-Token"
+  );
+
   res.end(JSON.stringify(data));
 }
 
-// ✅ ADMIN token (đặt trong ENV của API project)
 export function requireAdmin(req) {
   const secret = process.env.ADMIN_TOKEN_SECRET || process.env.ADMIN_TOKEN || "";
   if (!secret) return true;
