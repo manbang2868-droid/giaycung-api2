@@ -2,33 +2,28 @@
 // ✅ Dispatcher để giữ compatibility với vercel.json (functions pattern api/index.js)
 // ✅ Không dùng express
 // ✅ Forward request đến đúng file trong /api/*
-// ✅ Dùng WHATWG URL (tránh DeprecationWarning url.parse)
+// ✅ Dùng WHATWG URL API (tránh DEP0169)
 
 export default async function handler(req, res) {
   try {
     const u = new URL(req.url || "", `http://${req.headers.host || "localhost"}`);
     const path = u.pathname || "";
 
-    // /api hoặc /api/
+    // /api or /api/
     if (path === "/api" || path === "/api/") {
       res.setHeader("Content-Type", "application/json");
       res.statusCode = 200;
       return res.end(JSON.stringify({ ok: true, message: "api index" }));
     }
 
-    /** =========================
-     * ✅ SERVICE-ORDERS (dynamic)
-     * /api/service-orders
-     * /api/service-orders/...
-     * ========================= */
+    // ========= service-orders (catch-all) =========
+    // Bạn ưu tiên dùng file: api/service-orders/[...slug].js
     if (path === "/api/service-orders" || path.startsWith("/api/service-orders/")) {
       const mod = await import("./service-orders/[...slug].js");
       return mod.default(req, res);
     }
 
-    /** =========================
-     * ✅ ORDERS
-     * ========================= */
+    // ========= orders =========
     if (path === "/api/orders") {
       const mod = await import("./orders/index.js");
       return mod.default(req, res);
@@ -41,9 +36,8 @@ export default async function handler(req, res) {
       return mod.default(req, res);
     }
 
-    /** =========================
-     * ✅ SIMPLE ENDPOINTS (file .js)
-     * ========================= */
+    // ========= other flat endpoints =========
+    // Các file dạng: api/<name>.js
     if (path === "/api/services") {
       const mod = await import("./services.js");
       return mod.default(req, res);
@@ -74,7 +68,7 @@ export default async function handler(req, res) {
       return mod.default(req, res);
     }
 
-    // 404 fallback
+    // 404
     res.setHeader("Content-Type", "application/json");
     res.statusCode = 404;
     return res.end(JSON.stringify({ ok: false, message: "Not found" }));
