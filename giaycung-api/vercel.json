@@ -1,20 +1,8 @@
 {
   "functions": {
-    "api/**/*.{js,ts}": { "maxDuration": 10 }
+    "api/index.js": { "maxDuration": 10 }
   },
-  "headers": [
-    {
-      "source": "/api/(.*)",
-      "headers": [
-        { "key": "Access-Control-Allow-Origin", "value": "*" },
-        { "key": "Access-Control-Allow-Methods", "value": "GET,POST,PUT,PATCH,DELETE,OPTIONS" },
-        { "key": "Access-Control-Allow-Headers", "value": "Content-Type, Authorization, X-Admin-Token" },
-        { "key": "Access-Control-Max-Age", "value": "86400" }
-      ]
-    }
-  ],
   "rewrites": [
-    { "source": "/api/service-orders/(.*)", "destination": "/api/service-orders" },
-    { "source": "/api/(.*)", "destination": "/api/$1" }
+    { "source": "/api/(.*)", "destination": "/api/index.js" }
   ]
 }
