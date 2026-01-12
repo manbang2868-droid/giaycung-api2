@@ -6,17 +6,16 @@ function getPrivateKey() {
   return k.replace(/\\n/g, "\n");
 }
 
+// ✅ dùng GOOGLE_SHEETS_ID fallback SPREADSHEET_ID
 export function getSpreadsheetId() {
-  // bạn đang dùng GOOGLE_SHEETS_ID trên Vercel
-  return process.env.GOOGLE_SHEETS_ID || process.env.SPREADSHEET_ID || "";
+  const id = process.env.GOOGLE_SHEETS_ID || process.env.SPREADSHEET_ID;
+  if (!id) throw new Error("Missing GOOGLE_SHEETS_ID (or SPREADSHEET_ID)");
+  return id;
 }
 
 export function getAuth() {
   const email = process.env.GOOGLE_CLIENT_EMAIL;
   const key = getPrivateKey();
-  const spreadsheetId = getSpreadsheetId();
-
-  if (!spreadsheetId) throw new Error("Missing GOOGLE_SHEETS_ID (or SPREADSHEET_ID)");
   if (!email) throw new Error("Missing GOOGLE_CLIENT_EMAIL");
   if (!key) throw new Error("Missing GOOGLE_PRIVATE_KEY");
 
@@ -33,19 +32,11 @@ export async function getSheetsClient() {
   return google.sheets({ version: "v4", auth });
 }
 
-export function json(res, status, data) {
-  res.statusCode = status;
-  res.setHeader("Content-Type", "application/json; charset=utf-8");
-  res.end(JSON.stringify(data));
-}
-
 export function allowCors(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PATCH,DELETE,OPTIONS");
-  res.setHeader(
-    "Access-Control-Allow-Headers",
-    "Content-Type, X-Admin-Token, Authorization"
-  );
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Admin-Token");
+  res.setHeader("Access-Control-Max-Age", "86400");
 
   if (req.method === "OPTIONS") {
     res.statusCode = 200;
@@ -55,9 +46,21 @@ export function allowCors(req, res) {
   return false;
 }
 
+export function json(res, status, data) {
+  res.statusCode = status;
+  res.setHeader("Content-Type", "application/json");
+
+  // ✅ luôn kèm CORS kể cả khi error
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Admin-Token");
+  res.end(JSON.stringify(data));
+}
+
+// ✅ ADMIN token (đặt trong ENV của API project)
 export function requireAdmin(req) {
-  const secret = process.env.ADMIN_TOKEN_SECRET; // bạn hỏi cái này
-  if (!secret) return true; // nếu chưa set thì bỏ qua
+  const secret = process.env.ADMIN_TOKEN_SECRET || process.env.ADMIN_TOKEN || "";
+  if (!secret) return true;
+
   const got =
     req.headers["x-admin-token"] ||
     (req.headers.authorization || "").replace(/^Bearer\s+/i, "");
