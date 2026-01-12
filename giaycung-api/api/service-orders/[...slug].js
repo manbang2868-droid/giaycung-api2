@@ -1,5 +1,6 @@
 // api/service-orders/[...slug].js
-// Single-function router for ALL service-orders endpoints.
+// ✅ HƯỚNG B: 2 SHEETS (orders + shoes) - join theo orderId
+// ✅ Giữ nguyên endpoints để frontend không đổi
 
 import {
   getSheetsClient,
@@ -10,10 +11,13 @@ import {
   requireAdmin,
 } from "../_lib/gsheets.js";
 
-const SHEET_NAME = "service_orders";
-const RANGE_ALL = `${SHEET_NAME}!A:Z`;
+const ORDERS_SHEET = "service_orders";
+const SHOES_SHEET = "service_order_shoes";
 
-const DEFAULT_HEADERS = [
+const ORDERS_RANGE_ALL = `${ORDERS_SHEET}!A:Z`;
+const SHOES_RANGE_ALL = `${SHOES_SHEET}!A:Z`;
+
+const DEFAULT_ORDER_HEADERS = [
   "id",
   "orderNumber",
   "customerName",
@@ -22,7 +26,19 @@ const DEFAULT_HEADERS = [
   "totalAmount",
   "status",
   "assignedTo",
+  // (có thể sheet bạn còn shoesJson, backend sẽ bỏ qua)
   "shoesJson",
+];
+
+const DEFAULT_SHOE_HEADERS = [
+  "id",
+  "orderId",
+  "name",
+  "service",
+  "status",
+  "images",
+  "notes",
+  "deleted",
 ];
 
 function safeTrim(x) {
@@ -56,27 +72,25 @@ function normalizeStatus(status, type) {
   return ok.includes(s) ? s : "received";
 }
 
-async function getValues(sheets, spreadsheetId) {
-  const resp = await sheets.spreadsheets.values.get({
-    spreadsheetId,
-    range: RANGE_ALL,
-  });
+async function getValues(sheets, spreadsheetId, range) {
+  const resp = await sheets.spreadsheets.values.get({ spreadsheetId, range });
   return resp.data.values || [];
 }
 
-async function ensureHeaderRow(sheets, spreadsheetId, values) {
+async function ensureHeaderRow(sheets, spreadsheetId, sheetName, values, defaultHeaders) {
   const firstRow = values[0] || [];
   const headers = firstRow.map((h) => safeTrim(h)).filter(Boolean);
   if (headers.length) return headers;
 
+  // tạo header nếu sheet trống
   await sheets.spreadsheets.values.update({
     spreadsheetId,
-    range: `${SHEET_NAME}!A1:I1`,
+    range: `${sheetName}!A1:${String.fromCharCode(64 + defaultHeaders.length)}1`,
     valueInputOption: "USER_ENTERED",
-    requestBody: { values: [DEFAULT_HEADERS] },
+    requestBody: { values: [defaultHeaders] },
   });
 
-  return DEFAULT_HEADERS;
+  return defaultHeaders;
 }
 
 function rowsToObjects(values, headers) {
@@ -86,7 +100,7 @@ function rowsToObjects(values, headers) {
     headers.forEach((h, i) => {
       obj[h] = row?.[i] ?? "";
     });
-    obj.__rowIndex = idx + 2;
+    obj.__rowIndex = idx + 2; // header = row 1
     return obj;
   });
 }
@@ -96,32 +110,38 @@ function buildRowFromPayload(payload, headers) {
   return headers.map((h) => p[h] ?? "");
 }
 
-function parseShoesJson(v) {
+function parseImagesCell(v) {
   const raw = safeTrim(v);
   if (!raw) return [];
   try {
     const x = JSON.parse(raw);
-    return Array.isArray(x) ? x : [];
+    return Array.isArray(x) ? x.map((s) => safeTrim(s)).filter(Boolean) : [];
   } catch {
-    return [];
+    // nếu trước đó bạn lỡ lưu dạng "url1,url2"
+    return raw.split(",").map((s) => safeTrim(s)).filter(Boolean);
   }
 }
 
-function normalizeShoe(x) {
+function isDeletedCell(v) {
+  const s = safeTrim(v).toLowerCase();
+  return s === "true" || s === "1" || s === "yes";
+}
+
+function normalizeShoeRow(row) {
   return {
-    id: safeTrim(x?.id) || `shoe_${Date.now()}`,
-    name: safeTrim(x?.name),
-    service: safeTrim(x?.service),
-    status: normalizeStatus(x?.status, "shoe"),
-    images: Array.isArray(x?.images)
-      ? x.images.map((s) => safeTrim(s)).filter(Boolean)
-      : [],
-    notes: safeTrim(x?.notes),
+    id: safeTrim(row?.id),
+    orderId: safeTrim(row?.orderId),
+    name: safeTrim(row?.name),
+    service: safeTrim(row?.service),
+    status: normalizeStatus(row?.status, "shoe"),
+    images: parseImagesCell(row?.images),
+    notes: safeTrim(row?.notes),
+    deleted: isDeletedCell(row?.deleted),
+    __rowIndex: row?.__rowIndex,
   };
 }
 
-function normalizeOrder(row) {
-  const shoes = parseShoesJson(row?.shoesJson).map(normalizeShoe);
+function normalizeOrderRow(row) {
   return {
     id: safeTrim(row?.id),
     orderNumber: safeTrim(row?.orderNumber),
@@ -131,7 +151,7 @@ function normalizeOrder(row) {
     totalAmount: toNumber(row?.totalAmount, 0),
     status: normalizeStatus(row?.status, "order"),
     assignedTo: safeTrim(row?.assignedTo),
-    shoes,
+    __rowIndex: row?.__rowIndex,
   };
 }
 
@@ -146,15 +166,11 @@ function nextOrderNumber(existingOrders) {
 }
 
 function getRestFromReq(req) {
-  // ✅ Vercel catch-all: /api/service-orders/[...slug].js
-  // /api/service-orders            => slug undefined
-  // /api/service-orders/abc        => slug ["abc"]
-  // /api/service-orders/abc/shoes  => slug ["abc","shoes"]
   const slug = req?.query?.slug;
   if (Array.isArray(slug)) return slug.map((s) => safeTrim(s)).filter(Boolean);
   if (typeof slug === "string" && slug) return [safeTrim(slug)];
 
-  // Fallback: parse URL (rare)
+  // fallback parse url
   try {
     const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
     const parts = url.pathname.split("/").filter(Boolean);
@@ -173,6 +189,16 @@ function getUrlObj(req) {
   }
 }
 
+function groupShoesByOrderId(shoes) {
+  const map = new Map();
+  for (const s of shoes) {
+    if (!s.orderId) continue;
+    if (!map.has(s.orderId)) map.set(s.orderId, []);
+    map.get(s.orderId).push(s);
+  }
+  return map;
+}
+
 export default async function handler(req, res) {
   if (allowCors(req, res)) return;
 
@@ -183,26 +209,58 @@ export default async function handler(req, res) {
     const spreadsheetId = getSpreadsheetId();
     const sheets = await getSheetsClient();
 
-    let values = await getValues(sheets, spreadsheetId);
-    const headers = await ensureHeaderRow(sheets, spreadsheetId, values);
-    values = await getValues(sheets, spreadsheetId);
+    // ---- LOAD ORDERS ----
+    let orderValues = await getValues(sheets, spreadsheetId, ORDERS_RANGE_ALL);
+    const orderHeaders = await ensureHeaderRow(
+      sheets,
+      spreadsheetId,
+      ORDERS_SHEET,
+      orderValues,
+      DEFAULT_ORDER_HEADERS
+    );
+    orderValues = await getValues(sheets, spreadsheetId, ORDERS_RANGE_ALL);
 
-    const rows = rowsToObjects(values, headers);
-    const orders = rows
-      .map((r) => ({ ...r, shoes: parseShoesJson(r.shoesJson) }))
+    const orderRows = rowsToObjects(orderValues, orderHeaders);
+    const orders = orderRows
       .filter((r) => Object.values(r).some((v) => safeTrim(v) !== ""))
-      .map((r) => normalizeOrder(r));
+      .map((r) => normalizeOrderRow(r));
 
-    // -------- GET (PUBLIC) --------
+    // ---- LOAD SHOES ----
+    let shoeValues = await getValues(sheets, spreadsheetId, SHOES_RANGE_ALL);
+    const shoeHeaders = await ensureHeaderRow(
+      sheets,
+      spreadsheetId,
+      SHOES_SHEET,
+      shoeValues,
+      DEFAULT_SHOE_HEADERS
+    );
+    shoeValues = await getValues(sheets, spreadsheetId, SHOES_RANGE_ALL);
+
+    const shoeRows = rowsToObjects(shoeValues, shoeHeaders);
+    const shoesAll = shoeRows
+      .filter((r) => Object.values(r).some((v) => safeTrim(v) !== ""))
+      .map((r) => normalizeShoeRow(r))
+      .filter((s) => !s.deleted); // chỉ lấy chưa deleted
+
+    const shoesByOrderId = groupShoesByOrderId(shoesAll);
+
+    const attachShoes = (o) => ({
+      ...o,
+      shoes: shoesByOrderId.get(o.id) || [],
+    });
+
+    // ============== GET (PUBLIC) ==============
     if (req.method === "GET") {
       // GET /api/service-orders
       if (rest.length === 0) {
-        const sorted = [...orders].sort((a, b) => {
-          const tb = Date.parse(b.createdDate || "") || 0;
-          const ta = Date.parse(a.createdDate || "") || 0;
-          if (tb !== ta) return tb - ta;
-          return safeTrim(b.orderNumber).localeCompare(safeTrim(a.orderNumber));
-        });
+        const sorted = orders
+          .map(attachShoes)
+          .sort((a, b) => {
+            const tb = Date.parse(b.createdDate || "") || 0;
+            const ta = Date.parse(a.createdDate || "") || 0;
+            if (tb !== ta) return tb - ta;
+            return safeTrim(b.orderNumber).localeCompare(safeTrim(a.orderNumber));
+          });
         return json(res, 200, { ok: true, orders: sorted });
       }
 
@@ -214,41 +272,43 @@ export default async function handler(req, res) {
             url.searchParams.get("code")
         );
         if (!code) {
-          return json(res, 400, {
-            ok: false,
-            message: "Missing query: order / orderNumber",
-          });
+          return json(res, 400, { ok: false, message: "Missing query: order / orderNumber" });
         }
         const found = orders.find(
           (o) => safeTrim(o.orderNumber).toUpperCase() === code.toUpperCase()
         );
         if (!found) return json(res, 404, { ok: false, message: "Not found" });
-        return json(res, 200, { ok: true, order: found });
+        return json(res, 200, { ok: true, order: attachShoes(found) });
       }
 
       // GET /api/service-orders/:id
       const orderId = safeTrim(rest[0]);
       const found = orders.find((o) => o.id === orderId);
       if (!found) return json(res, 404, { ok: false, message: "Not found" });
-      return json(res, 200, { ok: true, order: found });
+      return json(res, 200, { ok: true, order: attachShoes(found) });
     }
 
-    // -------- ADMIN only --------
+    // ============== ADMIN ONLY ==============
     if (!requireAdmin(req)) {
-      return json(res, 401, {
-        ok: false,
-        message: "Unauthorized (missing/invalid token)",
-      });
+      return json(res, 401, { ok: false, message: "Unauthorized (missing/invalid token)" });
     }
 
     const body = parseBody(req);
 
     const findOrderRow = (orderId) => {
-      const row = rows.find((r) => safeTrim(r.id) === orderId);
+      const row = orderRows.find((r) => safeTrim(r.id) === orderId);
       return row || null;
     };
 
-    // POST /api/service-orders
+    const findShoeRow = (orderId, shoeId) => {
+      // endpoint có orderId + shoeId -> ưu tiên match cả 2
+      const row = shoeRows.find(
+        (r) => safeTrim(r.orderId) === orderId && safeTrim(r.id) === shoeId
+      );
+      return row || null;
+    };
+
+    // -------- POST /api/service-orders (create order) --------
     if (req.method === "POST" && rest.length === 0) {
       const customerName = safeTrim(body.customerName);
       const customerPhone = safeTrim(body.customerPhone);
@@ -256,18 +316,13 @@ export default async function handler(req, res) {
       const assignedTo = safeTrim(body.assignedTo);
 
       if (!customerName || !customerPhone) {
-        return json(res, 400, {
-          ok: false,
-          message: "Missing: customerName / customerPhone",
-        });
+        return json(res, 400, { ok: false, message: "Missing: customerName / customerPhone" });
       }
 
       const id = `ord_${Date.now()}`;
       const orderNumber = safeTrim(body.orderNumber) || nextOrderNumber(orders);
-      const createdDate =
-        safeTrim(body.createdDate) || new Date().toISOString().slice(0, 10);
+      const createdDate = safeTrim(body.createdDate) || new Date().toISOString().slice(0, 10);
       const status = normalizeStatus(body.status, "order");
-      const shoesJson = JSON.stringify([]);
 
       const payload = {
         id,
@@ -278,14 +333,14 @@ export default async function handler(req, res) {
         totalAmount,
         status,
         assignedTo,
-        shoesJson,
+        shoesJson: "", // để tương thích sheet cũ nếu còn cột
       };
 
-      const row = buildRowFromPayload(payload, headers);
+      const row = buildRowFromPayload(payload, orderHeaders);
 
       await sheets.spreadsheets.values.append({
         spreadsheetId,
-        range: RANGE_ALL,
+        range: ORDERS_RANGE_ALL,
         valueInputOption: "USER_ENTERED",
         insertDataOption: "INSERT_ROWS",
         requestBody: { values: [row] },
@@ -294,52 +349,11 @@ export default async function handler(req, res) {
       return json(res, 200, { ok: true, data: { id, orderNumber } });
     }
 
-    // POST /api/service-orders/:id/shoes
-    if (req.method === "POST" && rest.length === 2 && rest[1] === "shoes") {
-      const orderId = safeTrim(rest[0]);
-      const row = findOrderRow(orderId);
-      if (!row)
-        return json(res, 404, { ok: false, message: "Order not found" });
-
-      const shoe = normalizeShoe({
-        id: safeTrim(body.id) || `shoe_${Date.now()}`,
-        name: body.name,
-        service: body.service,
-        status: body.status,
-        images: body.images,
-        notes: body.notes,
-      });
-
-      if (!shoe.name || !shoe.service) {
-        return json(res, 400, {
-          ok: false,
-          message: "Missing: shoe.name / shoe.service",
-        });
-      }
-
-      const shoes = parseShoesJson(row.shoesJson);
-      shoes.push(shoe);
-      row.shoesJson = JSON.stringify(shoes);
-
-      const rowIndex = row.__rowIndex;
-      const outRow = buildRowFromPayload(row, headers);
-
-      await sheets.spreadsheets.values.update({
-        spreadsheetId,
-        range: `${SHEET_NAME}!A${rowIndex}:Z${rowIndex}`,
-        valueInputOption: "USER_ENTERED",
-        requestBody: { values: [outRow] },
-      });
-
-      return json(res, 200, { ok: true, data: { id: shoe.id } });
-    }
-
-    // PATCH /api/service-orders/:id
+    // -------- PATCH /api/service-orders/:id (update order) --------
     if (req.method === "PATCH" && rest.length === 1) {
       const orderId = safeTrim(rest[0]);
       const row = findOrderRow(orderId);
-      if (!row)
-        return json(res, 404, { ok: false, message: "Order not found" });
+      if (!row) return json(res, 404, { ok: false, message: "Order not found" });
 
       const updatable = [
         "customerName",
@@ -360,11 +374,11 @@ export default async function handler(req, res) {
       }
 
       const rowIndex = row.__rowIndex;
-      const outRow = buildRowFromPayload(row, headers);
+      const outRow = buildRowFromPayload(row, orderHeaders);
 
       await sheets.spreadsheets.values.update({
         spreadsheetId,
-        range: `${SHEET_NAME}!A${rowIndex}:Z${rowIndex}`,
+        range: `${ORDERS_SHEET}!A${rowIndex}:Z${rowIndex}`,
         valueInputOption: "USER_ENTERED",
         requestBody: { values: [outRow] },
       });
@@ -372,66 +386,14 @@ export default async function handler(req, res) {
       return json(res, 200, { ok: true, data: { id: orderId } });
     }
 
-    // PATCH /api/service-orders/:id/shoes/:shoeId
-    if (req.method === "PATCH" && rest.length === 3 && rest[1] === "shoes") {
-      const orderId = safeTrim(rest[0]);
-      const shoeId = safeTrim(rest[2]);
-      const row = findOrderRow(orderId);
-      if (!row)
-        return json(res, 404, { ok: false, message: "Order not found" });
-
-      const shoes = parseShoesJson(row.shoesJson);
-      const idx = shoes.findIndex((s) => safeTrim(s.id) === shoeId);
-      if (idx < 0)
-        return json(res, 404, { ok: false, message: "Shoe not found" });
-
-      const current = normalizeShoe(shoes[idx]);
-      const merged = { ...current };
-
-      const updatable = ["name", "service", "status", "images", "notes"];
-      for (const k of updatable) {
-        if (k in (body || {})) {
-          if (k === "images") {
-            merged.images = Array.isArray(body.images)
-              ? body.images.map((s) => safeTrim(s)).filter(Boolean)
-              : merged.images;
-          } else if (k === "status") {
-            merged.status = normalizeStatus(body.status, "shoe");
-          } else {
-            merged[k] = safeTrim(body[k]);
-          }
-        }
-      }
-      merged.id = shoeId;
-
-      shoes[idx] = merged;
-      row.shoesJson = JSON.stringify(shoes);
-
-      const rowIndex = row.__rowIndex;
-      const outRow = buildRowFromPayload(row, headers);
-
-      await sheets.spreadsheets.values.update({
-        spreadsheetId,
-        range: `${SHEET_NAME}!A${rowIndex}:Z${rowIndex}`,
-        valueInputOption: "USER_ENTERED",
-        requestBody: { values: [outRow] },
-      });
-
-      return json(res, 200, { ok: true, data: { id: shoeId } });
-    }
-
-    // DELETE /api/service-orders/:id
+    // -------- DELETE /api/service-orders/:id (delete order row) --------
     if (req.method === "DELETE" && rest.length === 1) {
       const orderId = safeTrim(rest[0]);
       const row = findOrderRow(orderId);
-      if (!row)
-        return json(res, 404, { ok: false, message: "Order not found" });
+      if (!row) return json(res, 404, { ok: false, message: "Order not found" });
 
-      const sheetId = await getSheetIdByTitle(
-        sheets,
-        spreadsheetId,
-        SHEET_NAME
-      );
+      // 1) delete order row
+      const sheetId = await getSheetIdByTitle(sheets, spreadsheetId, ORDERS_SHEET);
       const rowIndex = row.__rowIndex;
 
       await sheets.spreadsheets.batchUpdate({
@@ -452,31 +414,125 @@ export default async function handler(req, res) {
         },
       });
 
+      // 2) soft-delete all shoes of this order (best effort)
+      const deletedColExists = shoeHeaders.includes("deleted");
+      if (deletedColExists) {
+        const related = shoeRows.filter((r) => safeTrim(r.orderId) === orderId);
+        for (const sr of related) {
+          sr.deleted = "true";
+          const out = buildRowFromPayload(sr, shoeHeaders);
+          await sheets.spreadsheets.values.update({
+            spreadsheetId,
+            range: `${SHOES_SHEET}!A${sr.__rowIndex}:Z${sr.__rowIndex}`,
+            valueInputOption: "USER_ENTERED",
+            requestBody: { values: [out] },
+          });
+        }
+      }
+
       return json(res, 200, { ok: true, data: { id: orderId } });
     }
 
-    // DELETE /api/service-orders/:id/shoes/:shoeId
-    if (req.method === "DELETE" && rest.length === 3 && rest[1] === "shoes") {
+    // -------- POST /api/service-orders/:id/shoes (add shoe) --------
+    if (req.method === "POST" && rest.length === 2 && rest[1] === "shoes") {
       const orderId = safeTrim(rest[0]);
-      const shoeId = safeTrim(rest[2]);
-      const row = findOrderRow(orderId);
-      if (!row)
-        return json(res, 404, { ok: false, message: "Order not found" });
 
-      const shoes = parseShoesJson(row.shoesJson);
-      const next = shoes.filter((s) => safeTrim(s.id) !== shoeId);
-      if (next.length === shoes.length) {
-        return json(res, 404, { ok: false, message: "Shoe not found" });
+      // đảm bảo order tồn tại
+      const orderExists = orders.some((o) => o.id === orderId);
+      if (!orderExists) return json(res, 404, { ok: false, message: "Order not found" });
+
+      const name = safeTrim(body.name);
+      const service = safeTrim(body.service);
+      if (!name || !service) {
+        return json(res, 400, { ok: false, message: "Missing: shoe.name / shoe.service" });
       }
 
-      row.shoesJson = JSON.stringify(next);
+      const shoeId = safeTrim(body.id) || `shoe_${Date.now()}`;
+      const status = normalizeStatus(body.status, "shoe");
+      const imagesArr = Array.isArray(body.images) ? body.images.map((s) => safeTrim(s)).filter(Boolean) : [];
+      const notes = safeTrim(body.notes);
 
-      const rowIndex = row.__rowIndex;
-      const outRow = buildRowFromPayload(row, headers);
+      const payload = {
+        id: shoeId,
+        orderId,
+        name,
+        service,
+        status,
+        images: JSON.stringify(imagesArr),
+        notes,
+        deleted: "false",
+      };
+
+      const row = buildRowFromPayload(payload, shoeHeaders);
+
+      await sheets.spreadsheets.values.append({
+        spreadsheetId,
+        range: SHOES_RANGE_ALL,
+        valueInputOption: "USER_ENTERED",
+        insertDataOption: "INSERT_ROWS",
+        requestBody: { values: [row] },
+      });
+
+      return json(res, 200, { ok: true, data: { id: shoeId } });
+    }
+
+    // -------- PATCH /api/service-orders/:id/shoes/:shoeId (update shoe) --------
+    if (req.method === "PATCH" && rest.length === 3 && rest[1] === "shoes") {
+      const orderId = safeTrim(rest[0]);
+      const shoeId = safeTrim(rest[2]);
+
+      const row = findShoeRow(orderId, shoeId);
+      if (!row) return json(res, 404, { ok: false, message: "Shoe not found" });
+
+      const updatable = ["name", "service", "status", "images", "notes", "deleted"];
+
+      for (const k of updatable) {
+        if (k in (body || {})) {
+          if (k === "status") row.status = normalizeStatus(body.status, "shoe");
+          else if (k === "images") {
+            const arr = Array.isArray(body.images)
+              ? body.images.map((s) => safeTrim(s)).filter(Boolean)
+              : parseImagesCell(row.images);
+            row.images = JSON.stringify(arr);
+          } else if (k === "deleted") {
+            row.deleted = safeTrim(body.deleted) ? safeTrim(body.deleted) : row.deleted;
+          } else {
+            row[k] = safeTrim(body[k]);
+          }
+        }
+      }
+
+      // cố định id/orderId
+      row.id = shoeId;
+      row.orderId = orderId;
+
+      const outRow = buildRowFromPayload(row, shoeHeaders);
 
       await sheets.spreadsheets.values.update({
         spreadsheetId,
-        range: `${SHEET_NAME}!A${rowIndex}:Z${rowIndex}`,
+        range: `${SHOES_SHEET}!A${row.__rowIndex}:Z${row.__rowIndex}`,
+        valueInputOption: "USER_ENTERED",
+        requestBody: { values: [outRow] },
+      });
+
+      return json(res, 200, { ok: true, data: { id: shoeId } });
+    }
+
+    // -------- DELETE /api/service-orders/:id/shoes/:shoeId (soft delete shoe) --------
+    if (req.method === "DELETE" && rest.length === 3 && rest[1] === "shoes") {
+      const orderId = safeTrim(rest[0]);
+      const shoeId = safeTrim(rest[2]);
+
+      const row = findShoeRow(orderId, shoeId);
+      if (!row) return json(res, 404, { ok: false, message: "Shoe not found" });
+
+      row.deleted = "true";
+
+      const outRow = buildRowFromPayload(row, shoeHeaders);
+
+      await sheets.spreadsheets.values.update({
+        spreadsheetId,
+        range: `${SHOES_SHEET}!A${row.__rowIndex}:Z${row.__rowIndex}`,
         valueInputOption: "USER_ENTERED",
         requestBody: { values: [outRow] },
       });
@@ -487,9 +543,6 @@ export default async function handler(req, res) {
     return json(res, 405, { ok: false, message: "Method not allowed" });
   } catch (err) {
     console.error("SERVICE_ORDERS API ERROR:", err);
-    return json(res, 500, {
-      ok: false,
-      message: err?.message || "Internal server error",
-    });
+    return json(res, 500, { ok: false, message: err?.message || "Internal server error" });
   }
 }
