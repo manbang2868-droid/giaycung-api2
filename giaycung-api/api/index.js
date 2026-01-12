@@ -4,48 +4,62 @@ import cors from "cors";
 
 const app = express();
 
-/** ✅ Chỉ allow đúng domain này */
+/** ✅ chỉ allow đúng domain FE */
 const ALLOWED_ORIGIN = "https://giay-cung4.vercel.app";
 
 const corsOptions = {
   origin: (origin, cb) => {
-    // origin có thể undefined (curl/postman/server-to-server)
-    if (!origin) return cb(null, true);
+    // origin có thể undefined hoặc "null" (một số trường hợp)
+    if (!origin || origin === "null") return cb(null, true);
 
-    // chỉ cho phép đúng domain
     if (origin === ALLOWED_ORIGIN) return cb(null, true);
 
-    return cb(new Error("Not allowed by CORS"), false);
+    // QUAN TRỌNG: trả error để middleware error bắt và trả JSON
+    return cb(new Error(`Not allowed by CORS: ${origin}`), false);
   },
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization", "X-Admin-Token"],
-  credentials: false, // nếu bạn dùng cookie thì đổi true + origin không được là "*"
+  credentials: false,
   maxAge: 86400,
 };
 
-// ✅ Parse JSON
 app.use(express.json({ limit: "10mb" }));
 
-// ✅ Enable CORS cho mọi route
+// ✅ Enable CORS
 app.use(cors(corsOptions));
 
-// ✅ Fix preflight OPTIONS
+// ✅ Fix preflight
 app.options("*", cors(corsOptions));
 
-/** ====== TEST ROUTE ====== */
+/** ===== TEST ===== */
 app.get("/api/ping", (req, res) => {
   res.json({ ok: true, message: "pong" });
 });
 
-/** ====== Ví dụ /api/news ====== */
+/** ===== ROUTES THẬT ===== */
+app.get("/api/services", (req, res) => {
+  // TODO: sau này đọc Google Sheet services ở đây
+  res.json({ ok: true, data: [] });
+});
+
 app.get("/api/news", (req, res) => {
   res.json({ ok: true, data: [] });
 });
 
-/** ====== Nếu route không tồn tại ====== */
+/** ===== 404 ===== */
 app.use("/api", (req, res) => {
   res.status(404).json({ ok: false, message: "Not found" });
 });
 
-/** ✅ Quan trọng: export default cho Vercel */
-export default app;
+/** ✅ ERROR HANDLER (CHỐNG CRASH) */
+app.use((err, req, res, next) => {
+  console.error("API ERROR:", err);
+  res
+    .status(500)
+    .json({ ok: false, message: err?.message || "Internal server error" });
+});
+
+/** ✅ Export chuẩn cho Vercel */
+export default function handler(req, res) {
+  return app(req, res);
+}
