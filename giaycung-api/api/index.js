@@ -3,11 +3,18 @@
 // ✅ Không dùng express (tránh lỗi missing package)
 // ✅ Forward request đến đúng file trong /api/*
 
+import serviceOrdersHandler from "./service-orders.js";
+
 export default async function handler(req, res) {
   try {
     // Đường dẫn gốc: /api/...
     const url = req.url || "";
     const path = url.split("?")[0] || "";
+
+    // ✅ Forward service-orders (ALL: /api/service-orders, /api/service-orders/:id, /api/service-orders/:id/shoes/...)
+    if (path.startsWith("/api/service-orders")) {
+      return serviceOrdersHandler(req, res);
+    }
 
     // Nếu request chính là /api hoặc /api/ -> trả ping
     if (path === "/api" || path === "/api/") {
@@ -48,7 +55,11 @@ export default async function handler(req, res) {
     res.setHeader("Content-Type", "application/json");
     res.statusCode = 500;
     return res.end(
-      JSON.stringify({ ok: false, message: "Server error", detail: String(err?.message || err) })
+      JSON.stringify({
+        ok: false,
+        message: "Server error",
+        detail: String(err?.message || err),
+      })
     );
   }
 }
