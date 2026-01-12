@@ -2,6 +2,7 @@
 import {
   getSheetsClient,
   getSheetIdByTitle,
+  getSpreadsheetId,
   json,
   allowCors,
   requireAdmin,
@@ -51,8 +52,7 @@ export default async function handler(req, res) {
   if (allowCors(req, res)) return;
 
   try {
-    const spreadsheetId = safeTrim(process.env.SPREADSHEET_ID);
-    if (!spreadsheetId) throw new Error("Missing SPREADSHEET_ID");
+    const spreadsheetId = getSpreadsheetId();
 
     const sheets = await getSheetsClient();
 

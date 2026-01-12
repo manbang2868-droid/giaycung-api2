@@ -14,6 +14,7 @@
     }
   ],
   "rewrites": [
+    { "source": "/api/service-orders/(.*)", "destination": "/api/service-orders" },
     { "source": "/api/(.*)", "destination": "/api/$1" }
   ]
 }
