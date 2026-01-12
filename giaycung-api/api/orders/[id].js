@@ -1,5 +1,4 @@
 // api/orders/[id].js
-import { google } from "googleapis";
 import { allowCors, json, getSheetsClient, requireAdmin } from "../_lib/gsheets.js";
 
 function safeTrim(x) {
@@ -48,7 +47,7 @@ async function updateRowById(sheets, spreadsheetId, sheetName, id, idColIndex, p
 export default async function handler(req, res) {
   if (allowCors(req, res)) return;
 
-  // 🔒 admin-only cho PATCH/DELETE
+  // ✅ admin-only cho PATCH/DELETE
   if (req.method === "PATCH" || req.method === "DELETE") {
     if (!requireAdmin(req)) {
       return json(res, 401, {
@@ -62,20 +61,9 @@ export default async function handler(req, res) {
     const { sheets, spreadsheetId } = await getSheetsClient();
     const ORDERS_SHEET = "orders";
 
-    // hỗ trợ cả /api/orders/[id] và query ?id=
-    const id =
-      safeTrim(req.query?.id) ||
-      safeTrim(req.query?.[0]) ||
-      safeTrim(req.query?.orderId) ||
-      "";
+    const id = safeTrim(req.query.id);
+    if (!id) return json(res, 400, { ok: false, message: "Missing id" });
 
-    // Next/Vercel thường cho req.query.id (dynamic route)
-    // nhưng để chắc chắn, nếu dạng /api/orders/ABC thì id vẫn ở req.query.id
-    const finalId = id || safeTrim(req.query?.id);
-
-    if (!finalId) return json(res, 400, { ok: false, message: "Missing id" });
-
-    // ✅ PATCH /api/orders/:id
     if (req.method === "PATCH") {
       const status = safeTrim(req.body?.status);
       const allowed = ["pending", "processing", "completed", "cancelled"];
@@ -83,31 +71,16 @@ export default async function handler(req, res) {
         return json(res, 400, { ok: false, message: "Status không hợp lệ" });
       }
 
-      const ok = await updateRowById(
-        sheets,
-        spreadsheetId,
-        ORDERS_SHEET,
-        finalId,
-        0, // id nằm cột A
-        { status }
-      );
-
+      const ok = await updateRowById(sheets, spreadsheetId, ORDERS_SHEET, id, 0, { status });
       if (!ok.ok) return json(res, 404, { ok: false, message: ok.message || "Order not found" });
 
-      return json(res, 200, { ok: true, data: { id: finalId, status } });
+      return json(res, 200, { ok: true, data: { id, status } });
     }
 
-    // ✅ DELETE /api/orders/:id (soft delete = cancelled)
     if (req.method === "DELETE") {
-      const ok = await updateRowById(
-        sheets,
-        spreadsheetId,
-        ORDERS_SHEET,
-        finalId,
-        0,
-        { status: "cancelled" }
-      );
-
+      const ok = await updateRowById(sheets, spreadsheetId, ORDERS_SHEET, id, 0, {
+        status: "cancelled",
+      });
       if (!ok.ok) return json(res, 404, { ok: false, message: ok.message || "Order not found" });
 
       return json(res, 200, { ok: true });
