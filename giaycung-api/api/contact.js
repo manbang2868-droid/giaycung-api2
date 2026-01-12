@@ -2,6 +2,7 @@
 import {
   getSheetsClient,
   getSheetIdByTitle,
+  getSpreadsheetId,
   json,
   allowCors,
   requireAdmin,
@@ -43,20 +44,18 @@ function normalizeHeader(h) {
 
 function rowsToObjects(values, headers) {
   if (!values || values.length < 2) return [];
-
   return values.slice(1).map((row, idx) => {
     const obj = {};
     headers.forEach((h, i) => {
       obj[h] = row?.[i] ?? "";
     });
-    // header là dòng 1, data bắt đầu dòng 2
+    // header dòng 1, data bắt đầu dòng 2
     obj.__rowIndex = idx + 2;
     return obj;
   });
 }
 
 function buildRowFromPayload(payload, headers) {
-  // Map theo đúng thứ tự cột trong sheet
   const p = payload || {};
   return headers.map((h) => p[h] ?? "");
 }
@@ -99,24 +98,19 @@ async function ensureHeaderRow(sheets, spreadsheetId, values) {
 }
 
 export default async function handler(req, res) {
+  // 1️⃣ luôn cho OPTIONS đi trước
   if (allowCors(req, res)) return;
 
   try {
-    const spreadsheetId = safeTrim(process.env.SPREADSHEET_ID);
-    if (!spreadsheetId) {
-      return json(res, 500, { ok: false, message: "Missing SPREADSHEET_ID" });
-    }
-
+    const spreadsheetId = getSpreadsheetId();
     const sheets = await getSheetsClient();
 
     // luôn đọc sheet để lấy headers + dữ liệu
     let values = await getValues(sheets, spreadsheetId);
     const headers = await ensureHeaderRow(sheets, spreadsheetId, values);
+    values = await getValues(sheets, spreadsheetId); // đọc lại sau khi ensure header
 
-    // đọc lại sau khi ensure header (phòng trường hợp sheet trống)
-    values = await getValues(sheets, spreadsheetId);
-
-    // ===== GET =====
+    // 2️⃣ GET → USER + ADMIN đều xem được
     if (req.method === "GET") {
       const items = rowsToObjects(values, headers)
         .map((x) => normalizeContact(x))
@@ -125,7 +119,7 @@ export default async function handler(req, res) {
       return json(res, 200, { ok: true, data: items });
     }
 
-    // từ đây trở xuống là ghi => cần admin
+    // 3️⃣ từ đây trở xuống mới cần ADMIN
     if (!requireAdmin(req)) {
       return json(res, 401, {
         ok: false,
@@ -152,17 +146,7 @@ export default async function handler(req, res) {
       }
 
       const id = safeTrim(body?.id) || `store_${Date.now()}`;
-
-      const payload = {
-        id,
-        name,
-        address,
-        phone,
-        email,
-        hours,
-        googleMapsUrl,
-      };
-
+      const payload = { id, name, address, phone, email, hours, googleMapsUrl };
       const row = buildRowFromPayload(payload, headers);
 
       await sheets.spreadsheets.values.append({
@@ -176,44 +160,35 @@ export default async function handler(req, res) {
       return json(res, 200, { ok: true, data: { id } });
     }
 
-    // ===== PUT / PATCH (update) =====
-    // ✅ FIX: frontend bạn đang gọi PUT => backend phải hỗ trợ PUT
-    if (req.method === "PUT" || req.method === "PATCH") {
+    // ===== PATCH / PUT (update) =====
+    if (req.method === "PATCH" || req.method === "PUT") {
       const body = parseBody(req);
-
-      // nhận id từ body hoặc query
       const id = safeTrim(body?.id) || safeTrim(req.query?.id);
-      if (!id) return json(res, 400, { ok: false, message: "Thiếu id để cập nhật" });
+      if (!id) {
+        return json(res, 400, { ok: false, message: "Thiếu id để cập nhật" });
+      }
 
       const items = rowsToObjects(values, headers);
       const found = items.find((x) => safeTrim(x.id) === id);
-
       if (!found) {
-        return json(res, 404, { ok: false, message: `Không tìm thấy cửa hàng id=${id}` });
+        return json(res, 404, {
+          ok: false,
+          message: `Không tìm thấy cửa hàng id=${id}`,
+        });
       }
 
-      // merge: giữ data cũ, update field mới
+      // merge giữ data cũ
       const merged = {};
       headers.forEach((h) => {
         merged[h] = found[h] ?? "";
       });
 
       const updatable = ["name", "address", "phone", "email", "hours", "googleMapsUrl"];
+      updatable.forEach((k) => {
+        if (k in (body || {})) merged[k] = safeTrim(body[k]);
+      });
 
-      if (req.method === "PUT") {
-        // PUT: cập nhật "đầy đủ" theo payload, nhưng vẫn không tự xóa field nếu bạn không gửi
-        // (để tránh lỡ tay làm rỗng dữ liệu)
-        updatable.forEach((k) => {
-          if (k in (body || {})) merged[k] = safeTrim(body[k]);
-        });
-      } else {
-        // PATCH: chỉ update field nào có gửi lên
-        updatable.forEach((k) => {
-          if (k in (body || {})) merged[k] = safeTrim(body[k]);
-        });
-      }
-
-      merged.id = id; // khóa id
+      merged.id = id;
 
       const rowIndex = found.__rowIndex;
       const row = buildRowFromPayload(merged, headers);
@@ -236,9 +211,11 @@ export default async function handler(req, res) {
 
       const items = rowsToObjects(values, headers);
       const found = items.find((x) => safeTrim(x.id) === id);
-
       if (!found) {
-        return json(res, 404, { ok: false, message: `Không tìm thấy cửa hàng id=${id}` });
+        return json(res, 404, {
+          ok: false,
+          message: `Không tìm thấy cửa hàng id=${id}`,
+        });
       }
 
       const sheetId = await getSheetIdByTitle(sheets, spreadsheetId, SHEET_NAME);
