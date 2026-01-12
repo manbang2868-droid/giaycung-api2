@@ -1,6 +1,7 @@
 // api/_lib/gsheets.js
-import googleapisPkg from "googleapis";
-const { google } = googleapisPkg;
+import { google } from "googleapis";
+
+const ALLOWED_ORIGIN = "https://giay-cung4.vercel.app";
 
 function getPrivateKey() {
   const k = process.env.GOOGLE_PRIVATE_KEY || "";
@@ -11,12 +12,13 @@ function getPrivateKey() {
 export function getSpreadsheetId() {
   const id = process.env.GOOGLE_SHEETS_ID || process.env.SPREADSHEET_ID;
   if (!id) throw new Error("Missing GOOGLE_SHEETS_ID (or SPREADSHEET_ID)");
-  return id;
+  return String(id).trim();
 }
 
 export function getAuth() {
   const email = process.env.GOOGLE_CLIENT_EMAIL;
   const key = getPrivateKey();
+
   if (!email) throw new Error("Missing GOOGLE_CLIENT_EMAIL");
   if (!key) throw new Error("Missing GOOGLE_PRIVATE_KEY");
 
@@ -33,13 +35,14 @@ export async function getSheetsClient() {
   return google.sheets({ version: "v4", auth });
 }
 
+// ✅ CORS: chỉ cho phép domain FE, nhưng vẫn allow origin rỗng để test trực tiếp/curl
 export function allowCors(req, res) {
-  // ✅ chỉ allow đúng domain frontend của bạn
   const origin = req.headers.origin;
-  const allowed = "https://giay-cung4.vercel.app";
 
-  if (origin === allowed) {
-    res.setHeader("Access-Control-Allow-Origin", allowed);
+  if (!origin || origin === ALLOWED_ORIGIN) {
+    res.setHeader("Access-Control-Allow-Origin", origin || "*");
+  } else {
+    // Không set Allow-Origin -> browser sẽ chặn
   }
 
   res.setHeader("Vary", "Origin");
@@ -61,20 +64,20 @@ export function allowCors(req, res) {
   return false;
 }
 
-export function json(res, status, data) {
-  res.statusCode = status;
-  res.setHeader("Content-Type", "application/json");
+// ✅ luôn trả JSON + CORS (kể cả error)
+export function json(req, res, status, data) {
+  const origin = req.headers.origin;
 
-  // ✅ luôn kèm CORS (kể cả error)
-  const origin = res.req?.headers?.origin;
-  const allowed = "https://giay-cung4.vercel.app";
-  if (origin === allowed) res.setHeader("Access-Control-Allow-Origin", allowed);
+  if (!origin || origin === ALLOWED_ORIGIN) {
+    res.setHeader("Access-Control-Allow-Origin", origin || "*");
+  }
   res.setHeader("Vary", "Origin");
   res.setHeader(
     "Access-Control-Allow-Headers",
     "Content-Type, Authorization, X-Admin-Token"
   );
-
+  res.setHeader("Content-Type", "application/json");
+  res.statusCode = status;
   res.end(JSON.stringify(data));
 }
 
@@ -87,4 +90,14 @@ export function requireAdmin(req) {
     (req.headers.authorization || "").replace(/^Bearer\s+/i, "");
 
   return got === secret;
+}
+
+export async function getSheetIdByTitle(sheets, spreadsheetId, title) {
+  const meta = await sheets.spreadsheets.get({
+    spreadsheetId,
+    fields: "sheets(properties(sheetId,title))",
+  });
+  const found = meta.data.sheets?.find((s) => s.properties?.title === title);
+  if (!found?.properties?.sheetId) throw new Error(`Sheet tab not found: ${title}`);
+  return found.properties.sheetId;
 }
