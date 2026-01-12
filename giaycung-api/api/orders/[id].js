@@ -1,5 +1,11 @@
 // api/orders/[id].js
-import { allowCors, json, getSheetsClient, requireAdmin } from "../_lib/gsheets.js";
+import {
+  allowCors,
+  json,
+  getSpreadsheetId,
+  getSheetsClient,
+  requireAdmin,
+} from "../_lib/gsheets.js";
 
 function safeTrim(x) {
   return String(x ?? "").trim();
@@ -29,7 +35,7 @@ async function updateRowById(sheets, spreadsheetId, sheetName, id, idColIndex, p
   for (const [k, v] of Object.entries(patch)) {
     const col = colIndexMap[k];
     if (col === undefined) continue;
-    updated[col] = v;
+    updated[col] = String(v ?? "");
   }
 
   const endCol = String.fromCharCode("A".charCodeAt(0) + header.length - 1);
@@ -47,7 +53,7 @@ async function updateRowById(sheets, spreadsheetId, sheetName, id, idColIndex, p
 export default async function handler(req, res) {
   if (allowCors(req, res)) return;
 
-  // ✅ admin-only cho PATCH/DELETE
+  // ✅ [id] luôn admin-only (PATCH/DELETE)
   if (req.method === "PATCH" || req.method === "DELETE") {
     if (!requireAdmin(req)) {
       return json(res, 401, {
@@ -58,12 +64,16 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { sheets, spreadsheetId } = await getSheetsClient();
+    const sheets = await getSheetsClient();
+    const spreadsheetId = getSpreadsheetId();
     const ORDERS_SHEET = "orders";
 
-    const id = safeTrim(req.query.id);
+    // Next API: /api/orders/[id] => req.query.id
+    const rawId = Array.isArray(req.query?.id) ? req.query.id[0] : req.query?.id;
+    const id = safeTrim(rawId);
     if (!id) return json(res, 400, { ok: false, message: "Missing id" });
 
+    // ===== PATCH /api/orders/:id =====
     if (req.method === "PATCH") {
       const status = safeTrim(req.body?.status);
       const allowed = ["pending", "processing", "completed", "cancelled"];
@@ -71,16 +81,31 @@ export default async function handler(req, res) {
         return json(res, 400, { ok: false, message: "Status không hợp lệ" });
       }
 
-      const ok = await updateRowById(sheets, spreadsheetId, ORDERS_SHEET, id, 0, { status });
+      const ok = await updateRowById(
+        sheets,
+        spreadsheetId,
+        ORDERS_SHEET,
+        id,
+        0, // id nằm cột A
+        { status }
+      );
+
       if (!ok.ok) return json(res, 404, { ok: false, message: ok.message || "Order not found" });
 
       return json(res, 200, { ok: true, data: { id, status } });
     }
 
+    // ===== DELETE /api/orders/:id (soft delete => cancelled) =====
     if (req.method === "DELETE") {
-      const ok = await updateRowById(sheets, spreadsheetId, ORDERS_SHEET, id, 0, {
-        status: "cancelled",
-      });
+      const ok = await updateRowById(
+        sheets,
+        spreadsheetId,
+        ORDERS_SHEET,
+        id,
+        0,
+        { status: "cancelled" }
+      );
+
       if (!ok.ok) return json(res, 404, { ok: false, message: ok.message || "Order not found" });
 
       return json(res, 200, { ok: true });
