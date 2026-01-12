@@ -1,39 +1,125 @@
-import { allowCors, json } from "../_lib/gsheets.js";
+// api/orders/[id].js
+import { google } from "googleapis";
+import { allowCors, json, getSheetsClient, requireAdmin } from "../_lib/gsheets.js";
 
-function requireAdminOrders(req) {
-  const secret = process.env.ADMIN_TOKEN_SECRET;
-  if (!secret) return true;
+function safeTrim(x) {
+  return String(x ?? "").trim();
+}
 
-  const token =
-    req.headers["x-admin-token"] ||
-    (req.headers.authorization || "").replace(/^Bearer\s+/i, "");
+async function readSheet(sheets, spreadsheetId, range) {
+  const resp = await sheets.spreadsheets.values.get({ spreadsheetId, range });
+  return resp.data.values || [];
+}
 
-  return token === secret;
+async function updateRowById(sheets, spreadsheetId, sheetName, id, idColIndex, patch) {
+  const rows = await readSheet(sheets, spreadsheetId, `${sheetName}!A:Z`);
+  if (rows.length <= 1) return { ok: false, message: "Sheet trống" };
+
+  const header = rows[0];
+  const body = rows.slice(1);
+
+  const idx = body.findIndex((r) => safeTrim(r[idColIndex]) === id);
+  if (idx === -1) return { ok: false, message: "Order not found" };
+
+  const rowIndexInSheet = idx + 2; // header + 1-indexed
+  const current = body[idx];
+
+  const colIndexMap = Object.fromEntries(header.map((h, i) => [safeTrim(h), i]));
+  const updated = [...current];
+
+  for (const [k, v] of Object.entries(patch)) {
+    const col = colIndexMap[k];
+    if (col === undefined) continue;
+    updated[col] = v;
+  }
+
+  const endCol = String.fromCharCode("A".charCodeAt(0) + header.length - 1);
+
+  await sheets.spreadsheets.values.update({
+    spreadsheetId,
+    range: `${sheetName}!A${rowIndexInSheet}:${endCol}${rowIndexInSheet}`,
+    valueInputOption: "RAW",
+    requestBody: { values: [updated.slice(0, header.length)] },
+  });
+
+  return { ok: true };
 }
 
 export default async function handler(req, res) {
   if (allowCors(req, res)) return;
 
-  if (!requireAdminOrders(req)) {
-    return json(res, 401, {
-      ok: false,
-      message: "Unauthorized (missing/invalid X-Admin-Token)",
-    });
+  // 🔒 admin-only cho PATCH/DELETE
+  if (req.method === "PATCH" || req.method === "DELETE") {
+    if (!requireAdmin(req)) {
+      return json(res, 401, {
+        ok: false,
+        message: "Unauthorized (missing/invalid X-Admin-Token)",
+      });
+    }
   }
 
   try {
+    const { sheets, spreadsheetId } = await getSheetsClient();
+    const ORDERS_SHEET = "orders";
+
+    // hỗ trợ cả /api/orders/[id] và query ?id=
+    const id =
+      safeTrim(req.query?.id) ||
+      safeTrim(req.query?.[0]) ||
+      safeTrim(req.query?.orderId) ||
+      "";
+
+    // Next/Vercel thường cho req.query.id (dynamic route)
+    // nhưng để chắc chắn, nếu dạng /api/orders/ABC thì id vẫn ở req.query.id
+    const finalId = id || safeTrim(req.query?.id);
+
+    if (!finalId) return json(res, 400, { ok: false, message: "Missing id" });
+
+    // ✅ PATCH /api/orders/:id
     if (req.method === "PATCH") {
-      // update status
-      return json(res, 200, { ok: true });
+      const status = safeTrim(req.body?.status);
+      const allowed = ["pending", "processing", "completed", "cancelled"];
+      if (!allowed.includes(status)) {
+        return json(res, 400, { ok: false, message: "Status không hợp lệ" });
+      }
+
+      const ok = await updateRowById(
+        sheets,
+        spreadsheetId,
+        ORDERS_SHEET,
+        finalId,
+        0, // id nằm cột A
+        { status }
+      );
+
+      if (!ok.ok) return json(res, 404, { ok: false, message: ok.message || "Order not found" });
+
+      return json(res, 200, { ok: true, data: { id: finalId, status } });
     }
 
+    // ✅ DELETE /api/orders/:id (soft delete = cancelled)
     if (req.method === "DELETE") {
-      // delete order
+      const ok = await updateRowById(
+        sheets,
+        spreadsheetId,
+        ORDERS_SHEET,
+        finalId,
+        0,
+        { status: "cancelled" }
+      );
+
+      if (!ok.ok) return json(res, 404, { ok: false, message: ok.message || "Order not found" });
+
       return json(res, 200, { ok: true });
     }
 
     return json(res, 405, { ok: false, message: "Method not allowed" });
   } catch (err) {
-    return json(res, 500, { ok: false, message: "Server error" });
+    console.error("Orders [id] error:", err);
+    return json(res, 500, {
+      ok: false,
+      message: "Server error",
+      detail: String(err?.message || err),
+    });
   }
 }
