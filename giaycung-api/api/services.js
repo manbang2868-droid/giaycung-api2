@@ -1,8 +1,8 @@
 // api/services.js
 import {
   getSheetsClient,
-  getSheetIdByTitle,
   getSpreadsheetId,
+  getSheetIdByTitle,
   json,
   allowCors,
   requireAdmin,
@@ -40,14 +40,13 @@ function rowsToObjects(values) {
     headers.forEach((h, i) => {
       obj[h] = row?.[i] ?? "";
     });
-    // header dòng 1, data bắt đầu dòng 2
-    obj.__rowIndex = idx + 2;
+    obj.__rowIndex = idx + 2; // header dòng 1, data bắt đầu dòng 2
     return obj;
   });
 }
 
 function buildRowFromPayload(payload, headers) {
-  return headers.map((h) => payload[h] ?? "");
+  return headers.map((h) => payload?.[h] ?? "");
 }
 
 function normalizeService(x) {
@@ -64,7 +63,7 @@ function normalizeService(x) {
 }
 
 export default async function handler(req, res) {
-  // 1) luôn xử lý preflight trước
+  // 1) Preflight
   if (allowCors(req, res)) return;
 
   try {
@@ -78,18 +77,18 @@ export default async function handler(req, res) {
     });
 
     const values = resp.data.values || [];
-    const headers = (values[0] || []).map(normalizeHeader).filter(Boolean);
+    const headers = (values[0] || []).map(normalizeHeader);
 
     if (!headers.length) {
       return json(res, 500, {
         ok: false,
         message:
-          "Sheet services chưa có header. Hãy tạo dòng 1: id,title,description,price,duration,imageUrl,features,status",
+          "Sheet services chưa có header. Dòng 1 cần: id,title,description,price,duration,imageUrl,features,status",
       });
     }
 
-    // debug: /api/services?debug=1
-    if (safeTrim(req.query?.debug) === "1" && req.method === "GET") {
+    // debug nhanh
+    if (safeTrim(req.query?.debug) === "1") {
       return json(res, 200, {
         ok: true,
         debug: {
@@ -101,25 +100,27 @@ export default async function handler(req, res) {
       });
     }
 
-    // 2) GET: user + admin đều xem được
+    // 2) GET: user + admin đều xem
     if (req.method === "GET") {
-      const qStatus = safeTrim(req.query?.status);
-      // mặc định user chỉ lấy published
-      const status = qStatus || "published";
+      const status = safeTrim(req.query?.status || "published"); // published | draft | all
 
       let items = rowsToObjects(values)
         .map((x) => normalizeService(x))
         .filter((x) => Object.values(x).some((v) => safeTrim(v) !== ""));
 
-      // nếu truyền status=all thì trả hết
-      if (status !== "all") {
-        items = items.filter((x) => safeTrim(x.status) === status);
+      if (status !== "all" && status) {
+        items = items.filter((x) => x.status === status);
+      }
+
+      // default: nếu không truyền status -> chỉ published
+      if (!req.query?.status) {
+        items = items.filter((x) => x.status === "published");
       }
 
       return json(res, 200, { ok: true, data: items });
     }
 
-    // 3) từ đây trở xuống mới cần ADMIN
+    // 3) Từ đây trở xuống: ADMIN
     if (!requireAdmin(req)) {
       return json(res, 401, {
         ok: false,
@@ -127,7 +128,7 @@ export default async function handler(req, res) {
       });
     }
 
-    // 4) POST (create)
+    // 4) POST: create
     if (req.method === "POST") {
       const body = parseBody(req);
 
@@ -169,7 +170,7 @@ export default async function handler(req, res) {
       return json(res, 200, { ok: true, data: { id } });
     }
 
-    // 5) PATCH (update by id)  /api/services?id=srv_1
+    // 5) PATCH: update by id
     if (req.method === "PATCH") {
       const id = safeTrim(req.query?.id);
       if (!id) return json(res, 400, { ok: false, message: "Missing query: id" });
@@ -184,7 +185,6 @@ export default async function handler(req, res) {
       const merged = {};
       headers.forEach((h) => (merged[h] = found[h] ?? ""));
 
-      // field cho phép update
       const updatable = [
         "title",
         "description",
@@ -214,7 +214,7 @@ export default async function handler(req, res) {
       return json(res, 200, { ok: true, data: { id } });
     }
 
-    // 6) DELETE (delete row by id) /api/services?id=srv_1
+    // 6) DELETE: delete row by id
     if (req.method === "DELETE") {
       const id = safeTrim(req.query?.id);
       if (!id) return json(res, 400, { ok: false, message: "Missing query: id" });
@@ -226,8 +226,8 @@ export default async function handler(req, res) {
       const sheetId = await getSheetIdByTitle(sheets, spreadsheetId, SHEET_NAME);
 
       const rowIndex = found.__rowIndex; // 1-based
-      const startIndex = rowIndex - 1; // 0-based
-      const endIndex = rowIndex; // exclusive
+      const startIndex = rowIndex - 1;  // 0-based
+      const endIndex = rowIndex;        // exclusive
 
       await sheets.spreadsheets.batchUpdate({
         spreadsheetId,
