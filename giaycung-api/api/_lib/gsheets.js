@@ -3,18 +3,20 @@ import { google } from "googleapis";
 
 const ALLOWED_ORIGIN = "https://giay-cung4.vercel.app";
 
+/** ===== Utils ===== */
 function getPrivateKey() {
   const k = process.env.GOOGLE_PRIVATE_KEY || "";
   return k.replace(/\\n/g, "\n");
 }
 
-// ✅ dùng GOOGLE_SHEETS_ID fallback SPREADSHEET_ID
+/** ===== Spreadsheet ID ===== */
 export function getSpreadsheetId() {
   const id = process.env.GOOGLE_SHEETS_ID || process.env.SPREADSHEET_ID;
   if (!id) throw new Error("Missing GOOGLE_SHEETS_ID (or SPREADSHEET_ID)");
   return String(id).trim();
 }
 
+/** ===== Google Auth ===== */
 export function getAuth() {
   const email = process.env.GOOGLE_CLIENT_EMAIL;
   const key = getPrivateKey();
@@ -35,14 +37,12 @@ export async function getSheetsClient() {
   return google.sheets({ version: "v4", auth });
 }
 
-// ✅ CORS: chỉ cho phép domain FE, nhưng vẫn allow origin rỗng để test trực tiếp/curl
+/** ===== CORS ===== */
 export function allowCors(req, res) {
-  const origin = req.headers.origin;
+  const origin = req.headers?.origin;
 
   if (!origin || origin === ALLOWED_ORIGIN) {
     res.setHeader("Access-Control-Allow-Origin", origin || "*");
-  } else {
-    // Không set Allow-Origin -> browser sẽ chặn
   }
 
   res.setHeader("Vary", "Origin");
@@ -61,29 +61,40 @@ export function allowCors(req, res) {
     res.end();
     return true;
   }
+
   return false;
 }
 
-// ✅ luôn trả JSON + CORS (kể cả error)
-export function json(req, res, status, data) {
-  const origin = req.headers.origin;
+/** ===== JSON RESPONSE (FIX LỖI origin undefined) ===== */
+export function json(res, status, data) {
+  const origin = res?.req?.headers?.origin;
 
   if (!origin || origin === ALLOWED_ORIGIN) {
     res.setHeader("Access-Control-Allow-Origin", origin || "*");
   }
+
   res.setHeader("Vary", "Origin");
+  res.setHeader(
+    "Access-Control-Allow-Methods",
+    "GET,POST,PUT,PATCH,DELETE,OPTIONS"
+  );
   res.setHeader(
     "Access-Control-Allow-Headers",
     "Content-Type, Authorization, X-Admin-Token"
   );
+  res.setHeader("Access-Control-Max-Age", "86400");
   res.setHeader("Content-Type", "application/json");
+
   res.statusCode = status;
   res.end(JSON.stringify(data));
 }
 
+/** ===== ADMIN TOKEN ===== */
 export function requireAdmin(req) {
-  const secret = process.env.ADMIN_TOKEN_SECRET || process.env.ADMIN_TOKEN || "";
-  if (!secret) return true;
+  const secret =
+    process.env.ADMIN_TOKEN_SECRET || process.env.ADMIN_TOKEN || "";
+
+  if (!secret) return true; // cho phép nếu chưa set token
 
   const got =
     req.headers["x-admin-token"] ||
@@ -92,12 +103,20 @@ export function requireAdmin(req) {
   return got === secret;
 }
 
+/** ===== Get Sheet ID by tab name ===== */
 export async function getSheetIdByTitle(sheets, spreadsheetId, title) {
   const meta = await sheets.spreadsheets.get({
     spreadsheetId,
     fields: "sheets(properties(sheetId,title))",
   });
-  const found = meta.data.sheets?.find((s) => s.properties?.title === title);
-  if (!found?.properties?.sheetId) throw new Error(`Sheet tab not found: ${title}`);
+
+  const found = meta.data.sheets?.find(
+    (s) => s.properties?.title === title
+  );
+
+  if (!found?.properties?.sheetId) {
+    throw new Error(`Sheet tab not found: ${title}`);
+  }
+
   return found.properties.sheetId;
 }
