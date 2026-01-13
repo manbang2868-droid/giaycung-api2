@@ -83,19 +83,7 @@ export default async function handler(req, res) {
         return mod.default(req, res);
       }
     }
-    // ✅ Forward contact
-    // /api/contact
-    if (path === "/api/contact") {
-      const mod = await import("./contact.js");
-      return mod.default(req, res);
-    }
 
-    // ✅ Forward messages
-    // /api/messages
-    if (path === "/api/messages") {
-      const mod = await import("./messages.js");
-      return mod.default(req, res);
-    }
     // ====== 404 fallback ======
     res.setHeader("Content-Type", "application/json");
     res.statusCode = 404;
