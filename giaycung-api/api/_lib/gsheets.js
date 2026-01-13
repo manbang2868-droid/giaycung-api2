@@ -7,10 +7,11 @@ function safeTrim(x) {
   return String(x ?? "").trim();
 }
 
-/** ===== CORS WHITELIST ===== */
-// 👉 ƯU TIÊN dùng ENV: ALLOWED_ORIGINS
-// ví dụ:
-// https://giaycung.vn,https://www.giaycung.vn,https://giay-cung4.vercel.app
+/** ===== CORS WHITELIST =====
+ * Ưu tiên dùng ENV: ALLOWED_ORIGINS
+ * Ví dụ:
+ * https://giaycung.vn,https://www.giaycung.vn,https://giaycung-api3.vercel.app,https://giay-cung4.vercel.app,http://localhost:5173
+ */
 const ALLOWED_ORIGINS = safeTrim(process.env.ALLOWED_ORIGINS)
   ? safeTrim(process.env.ALLOWED_ORIGINS)
       .split(",")
@@ -26,23 +27,24 @@ const ALLOWED_ORIGINS = safeTrim(process.env.ALLOWED_ORIGINS)
 
 function isAllowedOrigin(origin) {
   if (!origin) return false;
-
   if (ALLOWED_ORIGINS.includes(origin)) return true;
 
-  // ✅ cho phép vercel preview domain
+  // ✅ cho phép Vercel preview domains
   if (/^https:\/\/.*\.vercel\.app$/.test(origin)) return true;
 
   return false;
 }
 
 function setCorsHeaders(req, res) {
-  const origin = req.headers?.origin;
+  const origin = req?.headers?.origin;
 
+  // ✅ Browser request (có Origin)
   if (origin && isAllowedOrigin(origin)) {
     res.setHeader("Access-Control-Allow-Origin", origin);
     res.setHeader("Vary", "Origin");
   }
 
+  // ✅ Dù có origin hay không, vẫn set các header còn lại
   res.setHeader(
     "Access-Control-Allow-Methods",
     "GET,POST,PUT,PATCH,DELETE,OPTIONS"
@@ -63,14 +65,13 @@ export function allowCors(req, res) {
     res.end();
     return true;
   }
-
   return false;
 }
 
 /** ===== JSON RESPONSE ===== */
 export function json(res, status, data) {
-  const req = res?.req;
-  setCorsHeaders(req, res);
+  // ✅ đảm bảo response nào cũng có CORS
+  setCorsHeaders(res?.req, res);
 
   res.setHeader("Content-Type", "application/json");
   res.statusCode = status;
@@ -171,6 +172,8 @@ function getAdminSecret() {
 
 export function requireAdmin(req) {
   const secret = getAdminSecret();
+
+  // chưa set secret => bỏ qua auth
   if (!secret) return true;
 
   const xToken = safeTrim(req.headers?.["x-admin-token"]);
@@ -179,8 +182,11 @@ export function requireAdmin(req) {
   const token = xToken || bearer;
 
   if (!token) return false;
+
+  // tương thích kiểu cũ: token == secret
   if (token === secret) return true;
 
+  // JWT HS256
   return verifyJwtHs256(token, secret).ok === true;
 }
 
@@ -191,9 +197,7 @@ export async function getSheetIdByTitle(sheets, spreadsheetId, title) {
     fields: "sheets(properties(sheetId,title))",
   });
 
-  const found = meta.data.sheets?.find(
-    (s) => s.properties?.title === title
-  );
+  const found = meta.data.sheets?.find((s) => s.properties?.title === title);
 
   if (!found?.properties?.sheetId) {
     throw new Error(`Sheet tab not found: ${title}`);
